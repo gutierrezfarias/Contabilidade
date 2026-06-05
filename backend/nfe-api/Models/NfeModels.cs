@@ -4,6 +4,53 @@ using System.Text.Json.Serialization;
 
 namespace ContHub.NfeApi.Models;
 
+public enum NfeEnvironment
+{
+    Homologacao,
+    Producao
+}
+
+public enum NfeServiceType
+{
+    NfeStatusServico,
+    NfeAutorizacao,
+    NfeRetAutorizacao,
+    NfeConsultaProtocolo,
+    NfeInutilizacao,
+    RecepcaoEvento,
+    ConsultaCadastro
+}
+
+public enum NfeAuthorizer
+{
+    AM,
+    BA,
+    GO,
+    MG,
+    MS,
+    MT,
+    PE,
+    PR,
+    RS,
+    SP,
+    SVAN,
+    SVRS,
+    SvcAn,
+    SvcRs,
+    AN
+}
+
+public sealed record NfeEndpointInfo
+{
+    public required NfeAuthorizer Authorizer { get; init; }
+    public required NfeEnvironment Environment { get; init; }
+    public required NfeServiceType ServiceType { get; init; }
+    public required string Uf { get; init; }
+    public required string CUf { get; init; }
+    public required string Url { get; init; }
+    public bool IsContingency { get; init; }
+}
+
 public sealed record EmitirNfeRequest
 {
     public string OrganizationId { get; init; } = "";
@@ -225,6 +272,12 @@ public sealed record SefazStatusResult
     public string Uf { get; init; } = "";
     public string Ambiente { get; init; } = "";
     public string Endpoint { get; init; } = "";
+    public string CUf { get; init; } = "";
+    public string TpAmb { get; init; } = "";
+    public string DhRecbto { get; init; } = "";
+    public string TMed { get; init; } = "";
+    public string Authorizer { get; init; } = "";
+    public string CorrelationId { get; init; } = "";
 }
 
 public static class NfeText

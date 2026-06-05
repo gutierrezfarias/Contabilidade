@@ -97,6 +97,19 @@ public sealed class NfeAuthorizationService(
                 cancellationToken);
             EnsureActiveCertificate(context.Certificate);
 
+            if (!string.IsNullOrWhiteSpace(request.DocumentId))
+            {
+                var existing = await repository.GetDocumentAsync(
+                    request.OrganizationId,
+                    request.ClientId,
+                    request.DocumentId,
+                    cancellationToken);
+                if (existing.Status.Equals("Autorizada", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Fail("Esta NF-e ja esta autorizada. Operacao bloqueada para evitar emissao duplicada.", [], existing.Id, existing.AccessKey);
+                }
+            }
+
             var build = xmlBuilder.Build(context.Company, context.Certificate, request.Nota);
             accessKey = build.AccessKey;
             documentId = await repository.UpsertDraftAsync(request, build, cancellationToken);
@@ -428,6 +441,7 @@ public sealed class NfeAuthorizationService(
             xmotivo,
             sucesso,
             erroTecnico,
+            Guid.NewGuid().ToString("N"),
             cancellationToken);
     }
 

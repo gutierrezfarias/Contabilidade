@@ -15,6 +15,7 @@ public sealed class NfeLogService(SupabaseNfeRepository repository)
         string xmotivo,
         bool sucesso,
         string erroTecnico,
+        string correlationId,
         CancellationToken cancellationToken)
     {
         // Nao salve XML, certificado ou senha em logs. Apenas metadados fiscais/tecnicos.
@@ -31,7 +32,7 @@ public sealed class NfeLogService(SupabaseNfeRepository repository)
             xmotivo,
             sucesso,
             erroTecnico,
+            correlationId,
             cancellationToken);
     }
 }
-

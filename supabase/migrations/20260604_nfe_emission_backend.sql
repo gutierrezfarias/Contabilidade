@@ -113,12 +113,16 @@ create table if not exists public.nfe_sefaz_logs (
   ambiente text not null default '',
   uf text not null default '',
   endpoint text not null default '',
+  correlation_id text not null default '',
   cstat text not null default '',
   xmotivo text not null default '',
   sucesso boolean not null default false,
   erro_tecnico text not null default '',
   created_at timestamptz not null default now()
 );
+
+alter table public.nfe_sefaz_logs
+  add column if not exists correlation_id text not null default '';
 
 create index if not exists nfe_documents_org_client_idx
   on public.nfe_documents (organization_id, client_id, document_direction, issue_date desc);

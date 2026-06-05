@@ -291,6 +291,7 @@ public sealed class SupabaseNfeRepository(IHttpClientFactory httpClientFactory)
         string xmotivo,
         bool sucesso,
         string erroTecnico,
+        string correlationId,
         CancellationToken cancellationToken)
     {
         await PostAsync(
@@ -300,6 +301,7 @@ public sealed class SupabaseNfeRepository(IHttpClientFactory httpClientFactory)
                 ambiente,
                 chave_acesso = accessKey,
                 company_id = companyId,
+                correlation_id = correlationId,
                 cstat,
                 endpoint,
                 erro_tecnico = erroTecnico,

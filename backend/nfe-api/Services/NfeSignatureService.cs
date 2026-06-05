@@ -28,11 +28,11 @@ public sealed class NfeSignatureService
         var reference = new Reference($"#{referenceId}");
         reference.AddTransform(new XmlDsigEnvelopedSignatureTransform());
         reference.AddTransform(new XmlDsigC14NTransform());
-        reference.DigestMethod = SignedXml.XmlDsigSHA1Url;
+        reference.DigestMethod = SignedXml.XmlDsigSHA256Url;
 
         signedXml.AddReference(reference);
         signedXml.SignedInfo!.CanonicalizationMethod = SignedXml.XmlDsigC14NTransformUrl;
-        signedXml.SignedInfo.SignatureMethod = SignedXml.XmlDsigRSASHA1Url;
+        signedXml.SignedInfo.SignatureMethod = SignedXml.XmlDsigRSASHA256Url;
 
         var keyInfo = new KeyInfo();
         keyInfo.AddClause(new KeyInfoX509Data(certificate));

@@ -1,14 +1,22 @@
 using System.Net.Http.Headers;
+using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Xml.Linq;
 using ContHub.NfeApi.Models;
 
 namespace ContHub.NfeApi.Services;
 
 public sealed class SefazSoapClientService(
     NfeEndpointResolver endpointResolver,
-    NfeReturnParserService parser)
+    NfeReturnParserService parser,
+    IConfiguration configuration)
 {
+    private readonly TimeSpan _timeout = TimeSpan.FromSeconds(
+        int.TryParse(configuration["Nfe:SefazTimeoutSeconds"], out var seconds)
+            ? Math.Clamp(seconds, 10, 180)
+            : 60);
+
     public Task<SefazSoapResult> AuthorizeAsync(
         string uf,
         string ambiente,
@@ -99,36 +107,49 @@ public sealed class SefazSoapClientService(
             cancellationToken);
     }
 
-    public async Task<SefazStatusResult> CheckStatusAsync(string uf, string ambiente, CancellationToken cancellationToken)
+    public async Task<SefazStatusResult> CheckStatusAsync(
+        string uf,
+        string ambiente,
+        X509Certificate2 certificate,
+        CancellationToken cancellationToken)
     {
-        var endpoint = endpointResolver.Status(uf, ambiente);
+        var endpoint = endpointResolver.ResolveEndpoint(uf, ambiente, NfeServiceType.NfeStatusServico);
         var tpAmb = ambiente.Equals("producao", StringComparison.OrdinalIgnoreCase) ? "1" : "2";
         var xml = $"""
             <consStatServ xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">
               <tpAmb>{tpAmb}</tpAmb>
-              <cUF>{UfCode(uf)}</cUF>
+              <cUF>{endpoint.CUf}</cUF>
               <xServ>STATUS</xServ>
             </consStatServ>
             """;
+        var correlationId = Guid.NewGuid().ToString("N");
 
         try
         {
-            var response = await PostSoapWithoutCertificateAsync(
-                endpoint,
+            var response = await PostSoapAsync(
+                endpoint.Url,
+                "NFeStatusServico4",
                 "http://www.portalfiscal.inf.br/nfe/wsdl/NFeStatusServico4/nfeStatusServicoNF",
                 "nfeStatusServicoNF",
                 xml,
+                certificate,
                 cancellationToken);
-            var result = parser.Parse(response, endpoint, "status_servico");
+            var document = XDocument.Parse(response.ResponseXml, LoadOptions.PreserveWhitespace);
             return new SefazStatusResult
             {
                 Ambiente = ambiente,
-                CStat = result.CStat,
-                Endpoint = endpoint,
-                Online = result.CStat is "107",
-                Status = result.CStat is "107" ? "online" : "instavel",
-                Uf = uf,
-                XMotivo = result.XMotivo
+                Authorizer = endpoint.Authorizer.ToString(),
+                CorrelationId = correlationId,
+                CUf = NfeReturnParserService.LastValue(document, "cUF"),
+                CStat = response.CStat,
+                DhRecbto = NfeReturnParserService.LastValue(document, "dhRecbto"),
+                Endpoint = endpoint.Url,
+                Online = response.CStat is "107",
+                Status = response.CStat is "107" ? "online" : "instavel",
+                TMed = NfeReturnParserService.LastValue(document, "tMed"),
+                TpAmb = NfeReturnParserService.LastValue(document, "tpAmb"),
+                Uf = endpoint.Uf,
+                XMotivo = response.XMotivo
             };
         }
         catch (Exception error)
@@ -136,11 +157,14 @@ public sealed class SefazSoapClientService(
             return new SefazStatusResult
             {
                 Ambiente = ambiente,
-                Endpoint = endpoint,
+                Authorizer = endpoint.Authorizer.ToString(),
+                CorrelationId = correlationId,
+                CUf = endpoint.CUf,
+                Endpoint = endpoint.Url,
                 Online = false,
                 Status = "offline",
-                Uf = uf,
-                XMotivo = error.Message
+                Uf = endpoint.Uf,
+                XMotivo = SanitizeTechnicalError(error)
             };
         }
     }
@@ -155,22 +179,16 @@ public sealed class SefazSoapClientService(
         CancellationToken cancellationToken)
     {
         using var handler = new HttpClientHandler();
+        handler.ClientCertificateOptions = ClientCertificateOption.Manual;
+        handler.SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;
         handler.ClientCertificates.Add(certificate);
 
-        using var client = new HttpClient(handler);
+        using var client = new HttpClient(handler)
+        {
+            Timeout = _timeout
+        };
         var response = await PostAsync(client, endpoint, action, operation, payloadXml, cancellationToken);
         return parser.Parse(response, endpoint, requestKind);
-    }
-
-    private async Task<string> PostSoapWithoutCertificateAsync(
-        string endpoint,
-        string action,
-        string operation,
-        string payloadXml,
-        CancellationToken cancellationToken)
-    {
-        using var client = new HttpClient();
-        return await PostAsync(client, endpoint, action, operation, payloadXml, cancellationToken);
     }
 
     private static async Task<string> PostAsync(
@@ -182,12 +200,9 @@ public sealed class SefazSoapClientService(
         CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
-        request.Headers.TryAddWithoutValidation("SOAPAction", $"\"{action}\"");
-        request.Content = new StringContent(BuildEnvelope(operation, payloadXml), Encoding.UTF8, "text/xml");
-        request.Content.Headers.ContentType = new MediaTypeHeaderValue("text/xml")
-        {
-            CharSet = "utf-8"
-        };
+        request.Content = new StringContent(BuildEnvelope(operation, payloadXml), Encoding.UTF8);
+        request.Content.Headers.ContentType =
+            MediaTypeHeaderValue.Parse($"application/soap+xml; charset=utf-8; action=\"{action}\"");
 
         using var response = await client.SendAsync(request, cancellationToken);
         var responseXml = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -203,15 +218,15 @@ public sealed class SefazSoapClientService(
     {
         return $"""
             <?xml version="1.0" encoding="utf-8"?>
-            <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-                           xmlns:xsd="http://www.w3.org/2001/XMLSchema"
-                           xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
-              <soap:Body>
+            <soap12:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                             xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+                             xmlns:soap12="http://www.w3.org/2003/05/soap-envelope">
+              <soap12:Body>
                 <{operation} xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/{WsdlName(operation)}">
                   <nfeDadosMsg>{payloadXml}</nfeDadosMsg>
                 </{operation}>
-              </soap:Body>
-            </soap:Envelope>
+              </soap12:Body>
+            </soap12:Envelope>
             """;
     }
 
@@ -225,35 +240,9 @@ public sealed class SefazSoapClientService(
         return "NFeStatusServico4";
     }
 
-    private static string UfCode(string uf) => uf.ToUpperInvariant() switch
+    private static string SanitizeTechnicalError(Exception error)
     {
-        "AC" => "12",
-        "AL" => "27",
-        "AM" => "13",
-        "AP" => "16",
-        "BA" => "29",
-        "CE" => "23",
-        "DF" => "53",
-        "ES" => "32",
-        "GO" => "52",
-        "MA" => "21",
-        "MG" => "31",
-        "MS" => "50",
-        "MT" => "51",
-        "PA" => "15",
-        "PB" => "25",
-        "PE" => "26",
-        "PI" => "22",
-        "PR" => "41",
-        "RJ" => "33",
-        "RN" => "24",
-        "RO" => "11",
-        "RR" => "14",
-        "RS" => "43",
-        "SC" => "42",
-        "SE" => "28",
-        "SP" => "35",
-        "TO" => "17",
-        _ => "35"
-    };
+        var message = error.Message;
+        return message.Length > 500 ? $"{message[..500]}..." : message;
+    }
 }

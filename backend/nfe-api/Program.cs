@@ -48,13 +48,70 @@ app.UseCors();
 app.MapGet("/health", () => Results.Ok(new { ok = true, service = "CONT HUB NF-e API" }));
 
 app.MapGet("/api/sefaz/status", async (
-    string uf,
-    string ambiente,
+    string organizationId,
+    string clientId,
+    string certificateId,
+    string? uf,
+    string? ambiente,
+    HttpContext httpContext,
+    SupabaseNfeRepository repository,
+    CertificateService certificateService,
     SefazSoapClientService soapClient,
     CancellationToken cancellationToken) =>
 {
-    var result = await soapClient.CheckStatusAsync(uf, ambiente, cancellationToken);
-    return Results.Ok(result);
+    try
+    {
+        var userId = await repository.RequireUserAsync(
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        await repository.EnsureOrganizationAccessAsync(userId, organizationId, cancellationToken);
+
+        var company = await repository.GetCompanyAsync(organizationId, clientId, cancellationToken);
+        var certificateRow = await repository.GetCertificateAsync(
+            organizationId,
+            clientId,
+            certificateId,
+            cancellationToken);
+
+        if (!certificateRow.Status.Equals("Ativo", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.BadRequest(new { ok = false, error = "Certificado selecionado nao esta ativo." });
+        }
+
+        var validation = certificateService.ValidateA1Certificate(certificateRow);
+        if (!validation.IsValid)
+        {
+            return Results.BadRequest(new { ok = false, error = string.Join(" ", validation.Errors) });
+        }
+
+        using var certificate = certificateService.LoadA1Certificate(certificateRow);
+        var statusUf = string.IsNullOrWhiteSpace(uf)
+            ? certificateRow.StateUf
+            : uf;
+        var statusEnvironment = string.IsNullOrWhiteSpace(ambiente)
+            ? certificateRow.Environment
+            : ambiente;
+
+        if (string.IsNullOrWhiteSpace(statusUf))
+        {
+            statusUf = company.State;
+        }
+
+        var result = await soapClient.CheckStatusAsync(
+            statusUf,
+            statusEnvironment,
+            certificate,
+            cancellationToken);
+        return Results.Ok(result);
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
 });
 
 app.MapPost("/api/nfe/gerar-xml", async (

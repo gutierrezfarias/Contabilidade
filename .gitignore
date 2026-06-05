@@ -24,3 +24,11 @@ dist-ssr
 *.sw?
 
 .vercel
+
+**/bin/
+**/obj/
+**/publish/
+*.pfx
+*.p12
+.env
+.env.*
