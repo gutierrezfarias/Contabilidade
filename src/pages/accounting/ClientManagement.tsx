@@ -52,9 +52,14 @@ const blankClient: ClientForm = {
   email: '',
   cep: '',
   address: '',
+  addressNumber: '',
+  addressComplement: '',
   neighborhood: '',
   city: '',
   state: '',
+  cityIbgeCode: '',
+  stateRegistration: '',
+  municipalRegistration: '',
   taxRegime: 'Nao informado',
   companySize: 'Nao informado',
   mainCnae: '',
@@ -87,7 +92,7 @@ const companySizeOptions: ClientCompanySize[] = [
 ]
 
 const clientCsvTemplate =
-  'razao_social;cnpj;telefone;email;cep;endereco;bairro;cidade;estado;regime_tributario;porte;cnae_principal;natureza_juridica;mensalista;valor_mensal\n'
+  'razao_social;cnpj;telefone;email;cep;endereco;numero;complemento;bairro;cidade;estado;codigo_ibge_municipio;inscricao_estadual;inscricao_municipal;regime_tributario;porte;cnae_principal;natureza_juridica;mensalista;valor_mensal\n'
 
 const serviceGroups: Array<{
   name: string
@@ -367,13 +372,11 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
   }
 
   function applyImportedDocument(imported: ImportedClientDocument, file: ImportedClientDocumentFile) {
-    const address = [imported.endereco, imported.numero && `n. ${imported.numero}`, imported.complemento]
-      .filter(Boolean)
-      .join(', ')
-
     setForm((current) => ({
       ...current,
-      address: address || current.address,
+      address: imported.endereco || current.address,
+      addressComplement: imported.complemento || current.addressComplement,
+      addressNumber: imported.numero || current.addressNumber,
       cep: imported.cep ? formatPostalCode('BR', imported.cep) : current.cep,
       city: imported.cidade || current.city,
       cnpj: imported.cnpj ? formatCnpj(imported.cnpj) : current.cnpj,
@@ -405,6 +408,8 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
         ...current,
         cep: result.cep,
         address: result.address || current.address,
+        addressComplement: result.complement || current.addressComplement,
+        cityIbgeCode: result.ibge || current.cityIbgeCode,
         neighborhood: result.neighborhood || current.neighborhood,
         city: result.city || current.city,
         state: result.state || current.state,
@@ -489,9 +494,14 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
       email: client.email,
       cep: client.cep,
       address: client.address,
+      addressNumber: client.addressNumber,
+      addressComplement: client.addressComplement,
       neighborhood: client.neighborhood,
       city: client.city,
       state: client.state,
+      cityIbgeCode: client.cityIbgeCode,
+      stateRegistration: client.stateRegistration,
+      municipalRegistration: client.municipalRegistration,
       taxRegime: client.taxRegime,
       companySize: client.companySize,
       mainCnae: client.mainCnae,
@@ -571,20 +581,26 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
     try {
       const rows = csvRows(await file.text())
       for (const row of rows) {
-        const hasTaxColumns = row.length > 11
-        const mensalistaIndex = hasTaxColumns ? 13 : 9
-        const monthlyFeeIndex = hasTaxColumns ? 14 : 10
+        const hasNewTemplate = row.length >= 18
+        const hasTaxColumns = hasNewTemplate || row.length > 11
+        const mensalistaIndex = hasNewTemplate ? 18 : hasTaxColumns ? 13 : 9
+        const monthlyFeeIndex = hasNewTemplate ? 19 : hasTaxColumns ? 14 : 10
         let cep = row[4] ?? ''
         let address = row[5] ?? ''
-        let neighborhood = row[6] ?? ''
-        let city = row[7] ?? ''
-        let state = row[8] ?? ''
+        const addressNumber = hasNewTemplate ? row[6] ?? '' : ''
+        let addressComplement = hasNewTemplate ? row[7] ?? '' : ''
+        let neighborhood = hasNewTemplate ? row[8] ?? '' : row[6] ?? ''
+        let city = hasNewTemplate ? row[9] ?? '' : row[7] ?? ''
+        let state = hasNewTemplate ? row[10] ?? '' : row[8] ?? ''
+        let cityIbgeCode = hasNewTemplate ? row[11] ?? '' : ''
 
         if (cep && (!address || !neighborhood || !city)) {
           try {
             const cepData = await findAddressDetailsByCep(cep)
             cep = cepData.cep
             address = address || cepData.address
+            addressComplement = addressComplement || cepData.complement
+            cityIbgeCode = cityIbgeCode || cepData.ibge
             neighborhood = neighborhood || cepData.neighborhood
             city = city || cepData.city
             state = state || cepData.state
@@ -600,13 +616,18 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
           email: row[3] ?? '',
           cep,
           address,
+          addressNumber,
+          addressComplement,
           neighborhood,
           city,
           state,
-          taxRegime: hasTaxColumns ? normalizeTaxRegime(row[9]) : 'Nao informado',
-          companySize: hasTaxColumns ? normalizeCompanySize(row[10]) : 'Nao informado',
-          mainCnae: hasTaxColumns ? row[11] ?? '' : '',
-          legalNature: hasTaxColumns ? row[12] ?? '' : '',
+          cityIbgeCode,
+          stateRegistration: hasNewTemplate ? row[12] ?? '' : '',
+          municipalRegistration: hasNewTemplate ? row[13] ?? '' : '',
+          taxRegime: hasTaxColumns ? normalizeTaxRegime(row[hasNewTemplate ? 14 : 9]) : 'Nao informado',
+          companySize: hasTaxColumns ? normalizeCompanySize(row[hasNewTemplate ? 15 : 10]) : 'Nao informado',
+          mainCnae: hasTaxColumns ? row[hasNewTemplate ? 16 : 11] ?? '' : '',
+          legalNature: hasTaxColumns ? row[hasNewTemplate ? 17 : 12] ?? '' : '',
           photoData: '',
           isMonthly: row[mensalistaIndex] ? parseBoolean(row[mensalistaIndex]) : true,
           monthlyFee: parseCurrencyValue(row[monthlyFeeIndex]),
@@ -1021,10 +1042,19 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
               />
               {isSearchingCep && <p className="text-xs font-semibold text-indigo-600">Buscando endereco pelo ViaCEP...</p>}
               <Input id="address" label="Endereco" onChange={(event) => updateField('address', event.target.value)} required value={form.address} />
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Input id="address-number" label="Numero" onChange={(event) => updateField('addressNumber', event.target.value)} value={form.addressNumber} />
+                <Input id="address-complement" label="Complemento" onChange={(event) => updateField('addressComplement', event.target.value)} value={form.addressComplement} />
+              </div>
               <div className="grid gap-4 sm:grid-cols-3">
                 <Input id="neighborhood" label="Bairro" onChange={(event) => updateField('neighborhood', event.target.value)} value={form.neighborhood} />
                 <Input id="city" label="Cidade" onChange={(event) => updateField('city', event.target.value)} value={form.city} />
                 <Input id="state" label="Estado" onChange={(event) => updateField('state', event.target.value.toUpperCase())} value={form.state} />
+              </div>
+              <div className="grid gap-4 sm:grid-cols-3">
+                <Input id="city-ibge-code" label="Codigo IBGE municipio" onChange={(event) => updateField('cityIbgeCode', event.target.value)} value={form.cityIbgeCode} />
+                <Input id="state-registration" label="Inscricao estadual" onChange={(event) => updateField('stateRegistration', event.target.value)} value={form.stateRegistration} />
+                <Input id="municipal-registration" label="Inscricao municipal" onChange={(event) => updateField('municipalRegistration', event.target.value)} value={form.municipalRegistration} />
               </div>
               <div className="grid gap-4 sm:grid-cols-2">
                 <Select id="tax-regime" label="Regime tributario" onChange={(value) => updateField('taxRegime', value)} value={form.taxRegime}>

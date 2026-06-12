@@ -133,13 +133,69 @@ public sealed class SupabaseNfeRepository(IHttpClientFactory httpClientFactory)
             AuthorizedXml = Get(row, "authorized_xml"),
             CertificateId = Get(row, "certificate_id"),
             ClientId = Get(row, "client_id"),
+            DanfePdfBase64 = Get(row, "danfe_pdf_data"),
             GeneratedXml = Get(row, "generated_xml"),
             Id = Get(row, "id"),
+            EmissionPayload = ReadPayload(row, "emission_payload"),
+            FiscalBlockReason = Get(row, "fiscal_block_reason"),
+            FiscalValidationStatus = Get(row, "fiscal_validation_status"),
             OrganizationId = Get(row, "organization_id"),
             ReceiptNumber = Get(row, "receipt_number"),
             SignedXml = Get(row, "signed_xml"),
             Status = Get(row, "status")
         };
+    }
+
+    public async Task<string> SaveDraftPayloadAsync(EmitirNfeRequest request, CancellationToken cancellationToken)
+    {
+        var amount = request.Nota.Itens.Sum(item =>
+        {
+            var product = item.ValorTotal > 0 ? item.ValorTotal : item.Quantidade * item.ValorUnitario;
+            return product + item.Frete + item.Seguro + item.OutrasDespesas + item.ValorIpi - item.Desconto;
+        });
+
+        if (!string.IsNullOrWhiteSpace(request.DocumentId))
+        {
+            await PatchAsync(
+                $"nfe_documents?id=eq.{Uri.EscapeDataString(request.DocumentId)}&organization_id=eq.{Uri.EscapeDataString(request.OrganizationId)}&client_id=eq.{Uri.EscapeDataString(request.ClientId)}",
+                new
+                {
+                    amount,
+                    certificate_id = request.CertificateId,
+                    document_direction = "emitida",
+                    document_model = "NFe",
+                    emission_payload = request.Nota,
+                    number = request.Nota.Numero,
+                    operation_type = request.Nota.NaturezaOperacao,
+                    raw_summary = request.Nota,
+                    series = request.Nota.Serie,
+                    status = "Rascunho",
+                    updated_at = DateTimeOffset.UtcNow
+                },
+                cancellationToken);
+            return request.DocumentId;
+        }
+
+        var inserted = await PostAsync(
+            "nfe_documents",
+            new
+            {
+                amount,
+                certificate_id = request.CertificateId,
+                client_id = request.ClientId,
+                document_direction = "emitida",
+                document_model = "NFe",
+                emission_payload = request.Nota,
+                number = request.Nota.Numero,
+                operation_type = request.Nota.NaturezaOperacao,
+                organization_id = request.OrganizationId,
+                raw_summary = request.Nota,
+                series = request.Nota.Serie,
+                status = "Rascunho"
+            },
+            cancellationToken);
+
+        return inserted[0].GetProperty("id").GetString() ?? "";
     }
 
     public async Task<string> UpsertDraftAsync(
@@ -159,6 +215,7 @@ public sealed class SupabaseNfeRepository(IHttpClientFactory httpClientFactory)
                     series = buildResult.Series,
                     status = "Pendente",
                     document_direction = "emitida",
+                    emission_payload = request.Nota,
                     raw_summary = request.Nota,
                     updated_at = DateTimeOffset.UtcNow
                 },
@@ -176,6 +233,7 @@ public sealed class SupabaseNfeRepository(IHttpClientFactory httpClientFactory)
                 client_id = request.ClientId,
                 document_direction = "emitida",
                 document_model = "NFe",
+                emission_payload = request.Nota,
                 number = buildResult.Number,
                 operation_type = request.Nota.NaturezaOperacao,
                 organization_id = request.OrganizationId,
@@ -229,6 +287,7 @@ public sealed class SupabaseNfeRepository(IHttpClientFactory httpClientFactory)
             new
             {
                 authorized_xml = authorizedXml,
+                authorized_at = DateTimeOffset.UtcNow,
                 danfe_pdf_data = danfePdfBase64,
                 last_consulted_at = DateTimeOffset.UtcNow,
                 last_xmotivo = result.XMotivo,
@@ -257,6 +316,7 @@ public sealed class SupabaseNfeRepository(IHttpClientFactory httpClientFactory)
                 last_xmotivo = xmotivo,
                 sefaz_status_code = cstat,
                 status,
+                cancelled_at = status.Equals("Cancelada", StringComparison.OrdinalIgnoreCase) ? DateTimeOffset.UtcNow : (DateTimeOffset?)null,
                 updated_at = DateTimeOffset.UtcNow
             },
             cancellationToken);
@@ -273,6 +333,24 @@ public sealed class SupabaseNfeRepository(IHttpClientFactory httpClientFactory)
                 receipt_number = result.ReceiptNumber,
                 sefaz_status_code = result.CStat,
                 status = "Pendente",
+                updated_at = DateTimeOffset.UtcNow
+            },
+            cancellationToken);
+    }
+
+    public async Task SaveFiscalValidationAsync(
+        string documentId,
+        NfeTaxPreviewResult fiscalResult,
+        CancellationToken cancellationToken)
+    {
+        await PatchAsync(
+            $"nfe_documents?id=eq.{Uri.EscapeDataString(documentId)}",
+            new
+            {
+                fiscal_block_reason = fiscalResult.Success ? "" : fiscalResult.Message,
+                fiscal_rule_ids = fiscalResult.AppliedRuleIds,
+                fiscal_validation_status = fiscalResult.Success ? "Valida" : "Bloqueada",
+                tax_preview_result = fiscalResult,
                 updated_at = DateTimeOffset.UtcNow
             },
             cancellationToken);
@@ -402,5 +480,22 @@ public sealed class SupabaseNfeRepository(IHttpClientFactory httpClientFactory)
         return row.TryGetProperty(property, out var value) && value.ValueKind != JsonValueKind.Null
             ? value.ToString() ?? fallback
             : fallback;
+    }
+
+    private static NfePayload? ReadPayload(JsonElement row, string property)
+    {
+        if (!row.TryGetProperty(property, out var value) || value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<NfePayload>(value.GetRawText(), NfeText.JsonOptions);
+        }
+        catch
+        {
+            return null;
+        }
     }
 }

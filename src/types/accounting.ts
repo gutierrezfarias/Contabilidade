@@ -56,9 +56,14 @@ export interface AccountingClient {
   email: string
   cep: string
   address: string
+  addressNumber: string
+  addressComplement: string
   neighborhood: string
   city: string
   state: string
+  cityIbgeCode: string
+  stateRegistration: string
+  municipalRegistration: string
   taxRegime: ClientTaxRegime
   companySize: ClientCompanySize
   mainCnae: string

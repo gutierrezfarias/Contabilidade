@@ -3,6 +3,7 @@ interface ViaCepResponse {
   logradouro: string
   complemento: string
   bairro: string
+  ibge: string
   localidade: string
   uf: string
 }
@@ -12,6 +13,7 @@ export interface CepAddress {
   address: string
   neighborhood: string
   city: string
+  ibge: string
   state: string
   complement: string
   fullAddress: string
@@ -45,6 +47,7 @@ export async function findAddressDetailsByCep(cep: string): Promise<CepAddress> 
     address: data.logradouro,
     neighborhood: data.bairro,
     city: data.localidade,
+    ibge: data.ibge,
     state: data.uf,
     complement: data.complemento,
     fullAddress,

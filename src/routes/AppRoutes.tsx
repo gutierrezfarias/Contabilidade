@@ -9,6 +9,7 @@ import { AppHome } from '../pages/apps/AppHome'
 import { PremiumApp } from '../pages/apps/PremiumApp'
 import { ClientManagement } from '../pages/accounting/ClientManagement'
 import { CnpjConsultation } from '../pages/accounting/CnpjConsultation'
+import { FiscalModule } from '../pages/accounting/FiscalModule'
 import { Integrations } from '../pages/accounting/Integrations'
 import { Ecac } from '../pages/accounting/gov/Ecac'
 import { Sefaz } from '../pages/accounting/gov/Sefaz'
@@ -87,6 +88,7 @@ export function AppRoutes() {
             <Route element={<AccountingDashboardRoute />} path="/dashboard" />
             <Route element={<ClientManagement key="cadastros" />} path="/gestao-clientes" />
             <Route element={<CnpjConsultation />} path="/consulta-cnpj" />
+            <Route element={<FiscalModule />} path="/fiscal" />
             <Route
               element={<ClientManagement initialTab="pagamentos" key="pagamentos" />}
               path="/gestao-financeira"

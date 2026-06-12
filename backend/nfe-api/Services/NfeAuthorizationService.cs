@@ -12,9 +12,73 @@ public sealed class NfeAuthorizationService(
     NfeSchemaValidationService schemaValidationService,
     SefazSoapClientService sefazSoapClient,
     DanfePdfService danfePdfService,
-    NfeLogService logService)
+    NfeLogService logService,
+    FiscalRuleEngineService fiscalRuleEngine)
 {
     private static readonly XNamespace NfeNs = "http://www.portalfiscal.inf.br/nfe";
+
+    public async Task<NfeOperationResult> SaveDraftAsync(
+        EmitirNfeRequest request,
+        string authorizationHeader,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var context = await LoadContextAsync(
+                request.OrganizationId,
+                request.ClientId,
+                request.CertificateId,
+                authorizationHeader,
+                cancellationToken);
+            var documentId = await repository.SaveDraftPayloadAsync(request, cancellationToken);
+            await WriteLogAsync(context, documentId, "", "salvar_rascunho", "local", "0", "Rascunho salvo.", true, "", cancellationToken);
+
+            return Ok("Rascunho", "Rascunho de NF-e salvo.", "", documentId);
+        }
+        catch (Exception error)
+        {
+            return Fail(error.Message);
+        }
+    }
+
+    public async Task<NfeOperationResult> ValidateOnlyAsync(
+        EmitirNfeRequest request,
+        string authorizationHeader,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var context = await LoadContextAsync(
+                request.OrganizationId,
+                request.ClientId,
+                request.CertificateId,
+                authorizationHeader,
+                cancellationToken);
+            var gate = await RunFiscalGateAsync(request, authorizationHeader, "validar_nfe", request.DocumentId ?? "", cancellationToken);
+            if (!gate.Success)
+            {
+                return FiscalFail(gate.FiscalResult, request.DocumentId ?? "", "");
+            }
+
+            var errors = xmlBuilder.ValidateForEmission(context.Company, context.Certificate, gate.Request.Nota);
+            if (errors.Count > 0)
+            {
+                return Fail("NF-e ainda possui pendencias fiscais.", errors);
+            }
+
+            return new NfeOperationResult
+            {
+                Message = "Dados minimos da NF-e validados para gerar XML modelo 55.",
+                Mode = "real",
+                Status = "Valida",
+                Success = true
+            };
+        }
+        catch (Exception error)
+        {
+            return Fail(error.Message);
+        }
+    }
 
     public async Task<NfeOperationResult> GenerateXmlOnlyAsync(
         EmitirNfeRequest request,
@@ -29,12 +93,19 @@ public sealed class NfeAuthorizationService(
                 request.CertificateId,
                 authorizationHeader,
                 cancellationToken);
-            var build = xmlBuilder.Build(context.Company, context.Certificate, request.Nota);
-            var documentId = await repository.UpsertDraftAsync(request, build, cancellationToken);
+            var gate = await RunFiscalGateAsync(request, authorizationHeader, "gerar_xml", request.DocumentId ?? "", cancellationToken);
+            if (!gate.Success)
+            {
+                return FiscalFail(gate.FiscalResult, request.DocumentId ?? "", "");
+            }
+
+            var build = xmlBuilder.Build(context.Company, context.Certificate, gate.Request.Nota);
+            var documentId = await repository.UpsertDraftAsync(gate.Request, build, cancellationToken);
+            await repository.SaveFiscalValidationAsync(documentId, gate.FiscalResult, cancellationToken);
             await repository.SaveGeneratedXmlAsync(documentId, build.AccessKey, build.Xml, cancellationToken);
             await WriteLogAsync(context, documentId, build.AccessKey, "gerar_xml", "local", "0", "XML gerado.", true, "", cancellationToken);
 
-            return Ok("XmlGerado", "XML NF-e 4.00 gerado e salvo.", build.AccessKey, documentId);
+            return Ok("XmlGerado", "XML NF-e 4.00 gerado e salvo.", build.AccessKey, documentId) with { Xml = build.Xml };
         }
         catch (Exception error)
         {
@@ -66,16 +137,157 @@ public sealed class NfeAuthorizationService(
                 return Fail("A NF-e ainda nao possui XML gerado para assinatura.");
             }
 
+            var gate = await EnsureDocumentFiscalGateAsync(
+                request.OrganizationId,
+                request.ClientId,
+                request.CertificateId,
+                request.DocumentId,
+                document,
+                authorizationHeader,
+                "assinar_xml",
+                cancellationToken);
+            if (!gate.Success)
+            {
+                return FiscalFail(gate.FiscalResult, document.Id, document.AccessKey);
+            }
+
             using var certificate = certificateService.LoadA1Certificate(context.Certificate);
             var signed = signatureService.SignInfNfe(document.GeneratedXml, certificate, document.AccessKey);
             await repository.SaveSignedXmlAsync(document.Id, signed.SignedXml, cancellationToken);
             await WriteLogAsync(context, document.Id, document.AccessKey, "assinar_xml", "local", "0", "XML assinado.", true, "", cancellationToken);
 
-            return Ok("XmlAssinado", "XML assinado com o certificado A1.", document.AccessKey, document.Id);
+            return Ok("XmlAssinado", "XML assinado com o certificado A1.", document.AccessKey, document.Id) with { Xml = signed.SignedXml };
         }
         catch (Exception error)
         {
             return Fail(error.Message);
+        }
+    }
+
+    public async Task<NfeOperationResult> AuthorizeSignedXmlAsync(
+        NfeDocumentRequest request,
+        string authorizationHeader,
+        CancellationToken cancellationToken)
+    {
+        string documentId = request.DocumentId;
+        string accessKey = "";
+
+        try
+        {
+            var context = await LoadContextAsync(
+                request.OrganizationId,
+                request.ClientId,
+                request.CertificateId,
+                authorizationHeader,
+                cancellationToken);
+            EnsureActiveCertificate(context.Certificate);
+            var document = await repository.GetDocumentAsync(
+                request.OrganizationId,
+                request.ClientId,
+                request.DocumentId,
+                cancellationToken);
+
+            if (document.Status.Equals("Autorizada", StringComparison.OrdinalIgnoreCase))
+            {
+                return Fail("Esta NF-e ja esta autorizada. Operacao bloqueada para evitar emissao duplicada.", [], document.Id, document.AccessKey);
+            }
+
+            if (string.IsNullOrWhiteSpace(document.SignedXml) || string.IsNullOrWhiteSpace(document.AccessKey))
+            {
+                return Fail("Gere e assine o XML antes de transmitir para a SEFAZ.", [], document.Id, document.AccessKey);
+            }
+
+            accessKey = document.AccessKey;
+            var gate = await EnsureDocumentFiscalGateAsync(
+                request.OrganizationId,
+                request.ClientId,
+                request.CertificateId,
+                request.DocumentId,
+                document,
+                authorizationHeader,
+                "autorizar_nfe",
+                cancellationToken);
+            if (!gate.Success)
+            {
+                return FiscalFail(gate.FiscalResult, document.Id, document.AccessKey);
+            }
+
+            using var certificate = certificateService.LoadA1Certificate(context.Certificate);
+            var enviNfeXml = xmlBuilder.BuildEnviNfe(document.SignedXml, LotId());
+            var schemaErrors = schemaValidationService.Validate(enviNfeXml, "enviNFe_v4.00.xsd");
+            if (schemaErrors.Count > 0)
+            {
+                await repository.SaveOperationStatusAsync(document.Id, "Rejeitada", "VALIDACAO_XSD", "XML invalido contra schema XSD.", cancellationToken);
+                await WriteLogAsync(context, document.Id, document.AccessKey, "validar_xsd", "local_xsd", "VALIDACAO_XSD", "XML invalido contra schema XSD.", false, string.Join(" | ", schemaErrors), cancellationToken);
+                return Fail("XML invalido contra schema XSD.", schemaErrors, document.Id, document.AccessKey);
+            }
+
+            var authorization = await sefazSoapClient.AuthorizeAsync(
+                context.Certificate.StateUf,
+                context.Certificate.Environment,
+                enviNfeXml,
+                certificate,
+                cancellationToken);
+            await WriteLogAsync(context, document.Id, document.AccessKey, "autorizar_nfe", authorization.Endpoint, authorization.CStat, authorization.XMotivo, authorization.Success, authorization.Error, cancellationToken);
+
+            if (authorization.CStat is "103" or "105" && !string.IsNullOrWhiteSpace(authorization.ReceiptNumber))
+            {
+                await repository.SaveReceiptAsync(document.Id, authorization, cancellationToken);
+                var receiptXml = xmlBuilder.BuildConsReciNfe(authorization.ReceiptNumber, context.Certificate.Environment);
+                var receiptValidation = schemaValidationService.Validate(receiptXml, "consReciNFe_v4.00.xsd");
+                if (receiptValidation.Count > 0)
+                {
+                    return Fail("XML de consulta de recibo invalido contra schema XSD.", receiptValidation, document.Id, document.AccessKey);
+                }
+
+                authorization = await sefazSoapClient.ConsultReceiptAsync(
+                    context.Certificate.StateUf,
+                    context.Certificate.Environment,
+                    receiptXml,
+                    certificate,
+                    cancellationToken);
+                await WriteLogAsync(context, document.Id, document.AccessKey, "consultar_recibo", authorization.Endpoint, authorization.CStat, authorization.XMotivo, authorization.Success, authorization.Error, cancellationToken);
+            }
+
+            if (authorization.CStat is "100" or "150")
+            {
+                var authorizedXml = BuildAuthorizedXml(document.SignedXml, authorization.ResponseXml);
+                var danfePdfBase64 = danfePdfService.GenerateBase64(authorizedXml);
+                await repository.SaveAuthorizationAsync(document.Id, authorization, authorizedXml, danfePdfBase64, cancellationToken);
+
+                return new NfeOperationResult
+                {
+                    AccessKey = document.AccessKey,
+                    CStat = authorization.CStat,
+                    DanfePdfBase64 = danfePdfBase64,
+                    DocumentId = document.Id,
+                    Message = authorization.XMotivo,
+                    Mode = "real",
+                    ProtocolNumber = authorization.ProtocolNumber,
+                    ReceiptNumber = authorization.ReceiptNumber,
+                    Status = "Autorizada",
+                    Success = true,
+                    XMotivo = authorization.XMotivo
+                };
+            }
+
+            await repository.SaveOperationStatusAsync(document.Id, MapStatus(authorization.CStat), authorization.CStat, authorization.XMotivo, cancellationToken);
+            return new NfeOperationResult
+            {
+                AccessKey = document.AccessKey,
+                CStat = authorization.CStat,
+                DocumentId = document.Id,
+                Message = authorization.XMotivo,
+                Mode = "real",
+                ReceiptNumber = authorization.ReceiptNumber,
+                Status = MapStatus(authorization.CStat),
+                Success = false,
+                XMotivo = authorization.XMotivo
+            };
+        }
+        catch (Exception error)
+        {
+            return Fail(error.Message, [], documentId, accessKey);
         }
     }
 
@@ -110,9 +322,16 @@ public sealed class NfeAuthorizationService(
                 }
             }
 
-            var build = xmlBuilder.Build(context.Company, context.Certificate, request.Nota);
+            var gate = await RunFiscalGateAsync(request, authorizationHeader, "emitir_nfe", request.DocumentId ?? "", cancellationToken);
+            if (!gate.Success)
+            {
+                return FiscalFail(gate.FiscalResult, request.DocumentId ?? "", "");
+            }
+
+            var build = xmlBuilder.Build(context.Company, context.Certificate, gate.Request.Nota);
             accessKey = build.AccessKey;
-            documentId = await repository.UpsertDraftAsync(request, build, cancellationToken);
+            documentId = await repository.UpsertDraftAsync(gate.Request, build, cancellationToken);
+            await repository.SaveFiscalValidationAsync(documentId, gate.FiscalResult, cancellationToken);
             await repository.SaveGeneratedXmlAsync(documentId, build.AccessKey, build.Xml, cancellationToken);
 
             using var certificate = certificateService.LoadA1Certificate(context.Certificate);
@@ -396,6 +615,101 @@ public sealed class NfeAuthorizationService(
         }
     }
 
+    private async Task<FiscalGateResult> EnsureDocumentFiscalGateAsync(
+        string organizationId,
+        string clientId,
+        string certificateId,
+        string documentId,
+        SupabaseNfeDocument document,
+        string authorizationHeader,
+        string operation,
+        CancellationToken cancellationToken)
+    {
+        if (document.EmissionPayload is null)
+        {
+            var result = new NfeTaxPreviewResult
+            {
+                BlockingErrors =
+                [
+                    new FiscalBlockError
+                    {
+                        Action = "Regere a NF-e a partir do formulario para gravar o payload fiscal.",
+                        Code = "NFE_PAYLOAD_MISSING",
+                        Field = "emission_payload",
+                        Message = "Documento sem payload fiscal salvo para revalidacao."
+                    }
+                ],
+                Errors = ["Documento sem payload fiscal salvo para revalidacao."],
+                Message = "Documento sem payload fiscal salvo para revalidacao.",
+                Status = "Bloqueada",
+                Success = false
+            };
+
+            return new FiscalGateResult(false, new EmitirNfeRequest
+            {
+                CertificateId = certificateId,
+                ClientId = clientId,
+                DocumentId = documentId,
+                OrganizationId = organizationId,
+                Nota = new NfePayload()
+            }, result);
+        }
+
+        var gate = await RunFiscalGateAsync(
+            new EmitirNfeRequest
+            {
+                CertificateId = certificateId,
+                ClientId = clientId,
+                DocumentId = documentId,
+                OrganizationId = organizationId,
+                Nota = document.EmissionPayload
+            },
+            authorizationHeader,
+            operation,
+            documentId,
+            cancellationToken);
+        await repository.SaveFiscalValidationAsync(documentId, gate.FiscalResult, cancellationToken);
+        return gate;
+    }
+
+    private async Task<FiscalGateResult> RunFiscalGateAsync(
+        EmitirNfeRequest request,
+        string authorizationHeader,
+        string operation,
+        string documentId,
+        CancellationToken cancellationToken)
+    {
+        var preview = await fiscalRuleEngine.PreviewAsync(
+            new NfeTaxPreviewRequest
+            {
+                ClientId = request.ClientId,
+                Destinatario = request.Nota.Destinatario,
+                Direction = NormalizeDirection(request.Nota.TipoOperacao),
+                Finalidade = request.Nota.Finalidade,
+                Itens = request.Nota.Itens,
+                OperationTypeCode = request.Nota.NaturezaOperacao,
+                OrganizationId = request.OrganizationId
+            },
+            authorizationHeader,
+            cancellationToken);
+
+        if (!preview.Success)
+        {
+            await fiscalRuleEngine.SaveBlockAuditAsync(request, authorizationHeader, preview, operation, documentId, cancellationToken);
+            return new FiscalGateResult(false, request, preview);
+        }
+
+        var calculatedItems = preview.Items
+            .OrderBy(item => item.Index)
+            .Select(item => item.CalculatedItem)
+            .ToList();
+
+        return new FiscalGateResult(
+            true,
+            request with { Nota = request.Nota with { Itens = calculatedItems } },
+            preview);
+    }
+
     private async Task<NfeContext> LoadContextAsync(
         string organizationId,
         string clientId,
@@ -479,6 +793,26 @@ public sealed class NfeAuthorizationService(
         Status = "Erro",
         Success = false
     };
+
+    private static NfeOperationResult FiscalFail(
+        NfeTaxPreviewResult fiscalResult,
+        string documentId,
+        string accessKey) => new()
+    {
+        AccessKey = accessKey,
+        DocumentId = documentId,
+        Errors = fiscalResult.Errors,
+        FiscalErrors = fiscalResult.BlockingErrors,
+        Message = fiscalResult.Message,
+        Mode = "real",
+        Status = "Bloqueada",
+        Success = false
+    };
+
+    private static string NormalizeDirection(string value) =>
+        value.Trim().Equals("entrada", StringComparison.OrdinalIgnoreCase)
+            ? "entrada"
+            : "saida";
 
     private static NfeOperationResult FromSefazResult(
         SefazSoapResult result,
@@ -677,6 +1011,11 @@ public sealed class NfeAuthorizationService(
         "TO" => "17",
         _ => throw new InvalidOperationException($"UF invalida para inutilizacao: {uf}.")
     };
+
+    private sealed record FiscalGateResult(
+        bool Success,
+        EmitirNfeRequest Request,
+        NfeTaxPreviewResult FiscalResult);
 
     private sealed record NfeContext(SupabaseCompany Company, SupabaseCertificate Certificate);
 }

@@ -32,6 +32,8 @@ builder.Services.AddHttpClient();
 builder.Services.AddSingleton<NfeEndpointResolver>();
 builder.Services.AddScoped<CertificateService>();
 builder.Services.AddScoped<DanfePdfService>();
+builder.Services.AddScoped<FiscalRuleEngineService>();
+builder.Services.AddScoped<NcmCatalogService>();
 builder.Services.AddScoped<NfeAuthorizationService>();
 builder.Services.AddScoped<NfeLogService>();
 builder.Services.AddScoped<NfeReturnParserService>();
@@ -39,6 +41,7 @@ builder.Services.AddScoped<NfeSchemaValidationService>();
 builder.Services.AddScoped<NfeSignatureService>();
 builder.Services.AddScoped<NfeXmlBuilderService>();
 builder.Services.AddScoped<SefazSoapClientService>();
+builder.Services.AddScoped<SupabaseFiscalRepository>();
 builder.Services.AddScoped<SupabaseNfeRepository>();
 
 var app = builder.Build();
@@ -46,6 +49,154 @@ var app = builder.Build();
 app.UseCors();
 
 app.MapGet("/health", () => Results.Ok(new { ok = true, service = "CONT HUB NF-e API" }));
+
+app.MapGet("/api/nfe/{id}", async (
+    string id,
+    string organizationId,
+    string clientId,
+    string certificateId,
+    HttpContext httpContext,
+    SupabaseNfeRepository repository,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var userId = await repository.RequireUserAsync(
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        await repository.EnsureOrganizationAccessAsync(userId, organizationId, cancellationToken);
+        await repository.GetCertificateAsync(organizationId, clientId, certificateId, cancellationToken);
+        var document = await repository.GetDocumentAsync(organizationId, clientId, id, cancellationToken);
+
+        return Results.Ok(new
+        {
+            ok = true,
+            document.Id,
+            document.AccessKey,
+            document.Status,
+            hasGeneratedXml = !string.IsNullOrWhiteSpace(document.GeneratedXml),
+            hasSignedXml = !string.IsNullOrWhiteSpace(document.SignedXml),
+            hasAuthorizedXml = !string.IsNullOrWhiteSpace(document.AuthorizedXml),
+            hasDanfe = !string.IsNullOrWhiteSpace(document.DanfePdfBase64),
+            document.ReceiptNumber
+        });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapGet("/api/nfe/{id}/status", async (
+    string id,
+    string organizationId,
+    string clientId,
+    string certificateId,
+    HttpContext httpContext,
+    SupabaseNfeRepository repository,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var userId = await repository.RequireUserAsync(
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        await repository.EnsureOrganizationAccessAsync(userId, organizationId, cancellationToken);
+        await repository.GetCertificateAsync(organizationId, clientId, certificateId, cancellationToken);
+        var document = await repository.GetDocumentAsync(organizationId, clientId, id, cancellationToken);
+
+        return Results.Ok(new
+        {
+            ok = true,
+            document.Id,
+            document.AccessKey,
+            document.Status,
+            document.ReceiptNumber
+        });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapGet("/api/nfe/{id}/xml", async (
+    string id,
+    string organizationId,
+    string clientId,
+    string certificateId,
+    HttpContext httpContext,
+    SupabaseNfeRepository repository,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var userId = await repository.RequireUserAsync(
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        await repository.EnsureOrganizationAccessAsync(userId, organizationId, cancellationToken);
+        await repository.GetCertificateAsync(organizationId, clientId, certificateId, cancellationToken);
+        var document = await repository.GetDocumentAsync(organizationId, clientId, id, cancellationToken);
+        var xml = string.IsNullOrWhiteSpace(document.AuthorizedXml)
+            ? string.IsNullOrWhiteSpace(document.SignedXml) ? document.GeneratedXml : document.SignedXml
+            : document.AuthorizedXml;
+
+        return string.IsNullOrWhiteSpace(xml)
+            ? Results.NotFound(new { ok = false, error = "XML ainda nao foi gerado para esta NF-e." })
+            : Results.Text(xml, "application/xml");
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapGet("/api/nfe/{id}/danfe", async (
+    string id,
+    string organizationId,
+    string clientId,
+    string certificateId,
+    HttpContext httpContext,
+    SupabaseNfeRepository repository,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var userId = await repository.RequireUserAsync(
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        await repository.EnsureOrganizationAccessAsync(userId, organizationId, cancellationToken);
+        await repository.GetCertificateAsync(organizationId, clientId, certificateId, cancellationToken);
+        var document = await repository.GetDocumentAsync(organizationId, clientId, id, cancellationToken);
+
+        if (string.IsNullOrWhiteSpace(document.DanfePdfBase64))
+        {
+            return Results.NotFound(new { ok = false, error = "DANFE ainda nao foi gerado para esta NF-e." });
+        }
+
+        return Results.File(Convert.FromBase64String(document.DanfePdfBase64), "application/pdf", $"danfe-{document.AccessKey}.pdf");
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
 
 app.MapGet("/api/sefaz/status", async (
     string organizationId,
@@ -114,7 +265,175 @@ app.MapGet("/api/sefaz/status", async (
     }
 });
 
+app.MapGet("/api/reference-data/ncm/search", async (
+    string? query,
+    int? limit,
+    HttpContext httpContext,
+    SupabaseNfeRepository nfeRepository,
+    NcmCatalogService ncmService,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        await nfeRepository.RequireUserAsync(
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+
+        var result = await ncmService.SearchAsync(query ?? "", limit ?? 20, cancellationToken);
+        return Results.Ok(new { ok = true, items = result });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapGet("/api/reference-data/ncm/{code}", async (
+    string code,
+    HttpContext httpContext,
+    SupabaseNfeRepository nfeRepository,
+    NcmCatalogService ncmService,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        await nfeRepository.RequireUserAsync(
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+
+        var result = await ncmService.GetAsync(code, cancellationToken);
+        return result is null
+            ? Results.NotFound(new { ok = false, error = "NCM nao encontrado." })
+            : Results.Ok(new { ok = true, item = result });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapGet("/api/reference-data/ncm/sync-status", async (
+    HttpContext httpContext,
+    SupabaseNfeRepository nfeRepository,
+    NcmCatalogService ncmService,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        await nfeRepository.RequireUserAsync(
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+
+        var result = await ncmService.GetStatusAsync(cancellationToken);
+        return Results.Ok(new { ok = true, status = result });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapPost("/api/reference-data/ncm/sync", async (
+    HttpContext httpContext,
+    SupabaseNfeRepository nfeRepository,
+    NcmCatalogService ncmService,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var userId = await nfeRepository.RequireUserAsync(
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+
+        var result = await ncmService.SyncAsync(userId, cancellationToken);
+        return result.Success ? Results.Ok(result) : Results.BadRequest(result);
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapPost("/api/nfe/tax-preview", async (
+    NfeTaxPreviewRequest request,
+    HttpContext httpContext,
+    FiscalRuleEngineService fiscalRuleEngine,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var result = await fiscalRuleEngine.PreviewAsync(
+            request,
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return result.Success ? Results.Ok(result) : Results.BadRequest(result);
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
 app.MapPost("/api/nfe/gerar-xml", async (
+    EmitirNfeRequest request,
+    HttpContext httpContext,
+    NfeAuthorizationService authorizationService,
+    CancellationToken cancellationToken) =>
+{
+    var result = await authorizationService.GenerateXmlOnlyAsync(
+        request,
+        httpContext.Request.Headers.Authorization.ToString(),
+        cancellationToken);
+    return result.Success ? Results.Ok(result) : Results.BadRequest(result);
+});
+
+app.MapPost("/api/nfe/drafts", async (
+    EmitirNfeRequest request,
+    HttpContext httpContext,
+    NfeAuthorizationService authorizationService,
+    CancellationToken cancellationToken) =>
+{
+    var result = await authorizationService.SaveDraftAsync(
+        request,
+        httpContext.Request.Headers.Authorization.ToString(),
+        cancellationToken);
+    return result.Success ? Results.Ok(result) : Results.BadRequest(result);
+});
+
+app.MapPost("/api/nfe/validate", async (
+    EmitirNfeRequest request,
+    HttpContext httpContext,
+    NfeAuthorizationService authorizationService,
+    CancellationToken cancellationToken) =>
+{
+    var result = await authorizationService.ValidateOnlyAsync(
+        request,
+        httpContext.Request.Headers.Authorization.ToString(),
+        cancellationToken);
+    return result.Success ? Results.Ok(result) : Results.BadRequest(result);
+});
+
+app.MapPost("/api/nfe/generate-xml", async (
     EmitirNfeRequest request,
     HttpContext httpContext,
     NfeAuthorizationService authorizationService,
@@ -134,6 +453,32 @@ app.MapPost("/api/nfe/assinar-xml", async (
     CancellationToken cancellationToken) =>
 {
     var result = await authorizationService.SignExistingXmlAsync(
+        request,
+        httpContext.Request.Headers.Authorization.ToString(),
+        cancellationToken);
+    return result.Success ? Results.Ok(result) : Results.BadRequest(result);
+});
+
+app.MapPost("/api/nfe/sign", async (
+    AssinarXmlRequest request,
+    HttpContext httpContext,
+    NfeAuthorizationService authorizationService,
+    CancellationToken cancellationToken) =>
+{
+    var result = await authorizationService.SignExistingXmlAsync(
+        request,
+        httpContext.Request.Headers.Authorization.ToString(),
+        cancellationToken);
+    return result.Success ? Results.Ok(result) : Results.BadRequest(result);
+});
+
+app.MapPost("/api/nfe/authorize", async (
+    NfeDocumentRequest request,
+    HttpContext httpContext,
+    NfeAuthorizationService authorizationService,
+    CancellationToken cancellationToken) =>
+{
+    var result = await authorizationService.AuthorizeSignedXmlAsync(
         request,
         httpContext.Request.Headers.Authorization.ToString(),
         cancellationToken);

@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { AccountingTabs } from '../../../components/accounting/AccountingTabs'
 import { DashboardLayout } from '../../../components/layout/DashboardLayout'
 import { NfeAccessKeySearch } from '../../../components/sefaz/NfeAccessKeySearch'
 import { NfeChecklist } from '../../../components/sefaz/NfeChecklist'
 import { NfeDfeSearchPanel } from '../../../components/sefaz/NfeDfeSearchPanel'
+import { NfeEmissionForm } from '../../../components/sefaz/NfeEmissionForm'
 import { NfeNsuStatusCard } from '../../../components/sefaz/NfeNsuStatusCard'
 import { NfeStatusCard } from '../../../components/sefaz/NfeStatusCard'
 import { NfeValidationAlerts } from '../../../components/sefaz/NfeValidationAlerts'
@@ -22,7 +22,6 @@ import { resolveOrganizationId } from '../../../services/platformService'
 import {
   consultDfeFromSefaz,
   consultNfeByAccessKey,
-  createNfeDraft,
   getLatestSefazSyncState,
   listNfeDocuments,
   manifestNfeDocument,
@@ -71,13 +70,13 @@ const statusDescriptions = {
   online: {
     dot: 'bg-emerald-500',
     label: 'SEFAZ Online',
-    text: 'Certificado e servicos prontos',
+    text: 'Ultimo retorno real registrado',
     wrapper: 'border-emerald-200 bg-emerald-50 text-emerald-800',
   },
   instavel: {
     dot: 'bg-amber-400',
-    label: 'SEFAZ instavel',
-    text: 'Falta arquivo, senha ou servicos',
+    label: 'SEFAZ nao verificada',
+    text: 'Pronto localmente, aguardando retorno real',
     wrapper: 'border-amber-200 bg-amber-50 text-amber-800',
   },
   offline: {
@@ -152,16 +151,6 @@ export function Sefaz() {
   const [feedback, setFeedback] = useState('')
   const [error, setError] = useState('')
   const [syncStateError, setSyncStateError] = useState('')
-  const [nfeForm, setNfeForm] = useState({
-    accessKey: '',
-    amount: '',
-    description: '',
-    number: '',
-    operationType: 'Venda',
-    recipientDocument: '',
-    recipientName: '',
-    series: '1',
-  })
   const selectedCertificate = certificates.find((certificate) => certificate.id === certificateId) ?? null
   const selectedClient = clients.find((client) => client.id === clientId) ?? null
   const selectedUf = selectedCertificate?.stateUf || selectedClient?.state || ''
@@ -170,11 +159,14 @@ export function Sefaz() {
       selectedCertificate?.certificatePassword &&
       selectedCertificate?.status === 'Ativo',
   )
-  const sefazAvailability: SefazAvailability = !selectedCertificate
+  const realSefazStatusCode = syncState?.lastStatusCode ?? ''
+  const sefazAvailability: SefazAvailability = !selectedCertificate || !certificateReady
     ? 'offline'
-    : certificateReady && enabledServices.length > 0
-      ? 'online'
-      : 'instavel'
+    : syncState?.lastErrorMessage
+      ? 'offline'
+      : realSefazStatusCode
+        ? 'online'
+        : 'instavel'
   const totalAmount = useMemo(
     () => documents.reduce((total, document) => total + document.amount, 0),
     [documents],
@@ -478,48 +470,6 @@ export function Sefaz() {
       setError(activateError instanceof Error ? activateError.message : 'Nao foi possivel habilitar servicos.')
     } finally {
       setIsActivatingServices(false)
-    }
-  }
-
-  function updateNfeForm(field: keyof typeof nfeForm, value: string) {
-    setNfeForm((current) => ({ ...current, [field]: value }))
-  }
-
-  async function handleCreateNfeDraft(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-
-    if (!emissionReadiness.isReady) {
-      setError(emissionReadiness.errors[0]?.message ?? 'Revise as pendencias antes de emitir NF-e.')
-      setFeedback('')
-      return
-    }
-
-    if (!organizationId || !clientId || !certificateId) {
-      setError('Selecione cliente e certificado ativo antes de gerar a nota.')
-      setFeedback('')
-      return
-    }
-
-    try {
-      await createNfeDraft({
-        accessKey: nfeForm.accessKey,
-        amount: Number(nfeForm.amount || 0),
-        certificateId,
-        clientId,
-        description: nfeForm.description,
-        operationType: nfeForm.operationType,
-        organizationId,
-        recipientDocument: nfeForm.recipientDocument,
-        recipientName: nfeForm.recipientName,
-        series: nfeForm.series,
-        number: nfeForm.number,
-      })
-      setFeedback('Rascunho de NF-e salvo. A autorizacao real entra na proxima etapa do backend fiscal.')
-      setError('')
-      await loadDocuments()
-    } catch (draftError) {
-      setError(draftError instanceof Error ? draftError.message : 'Nao foi possivel gerar o rascunho.')
-      setFeedback('')
     }
   }
 
@@ -932,36 +882,19 @@ export function Sefaz() {
       )}
 
       {tab === 'emissao' && (
-        <section className="mt-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h3 className="mb-6 text-xl font-semibold text-slate-900">Gerar nota fiscal</h3>
-          <div className="mb-6">
-            <NfeValidationAlerts result={emissionReadiness} title="Pendencias para emissao" />
-          </div>
-          <form className="grid gap-5 md:grid-cols-2" onSubmit={handleCreateNfeDraft}>
-            <Input id="nfe-number" label="Numero da NF-e" onChange={(event) => updateNfeForm('number', event.target.value)} value={nfeForm.number} />
-            <Input id="nfe-series" label="Serie" onChange={(event) => updateNfeForm('series', event.target.value)} value={nfeForm.series} />
-            <Input id="nfe-access-key" label="Chave de acesso (se ja existir)" onChange={(event) => updateNfeForm('accessKey', event.target.value)} value={nfeForm.accessKey} />
-            <Input id="nfe-amount" label="Valor total" onChange={(event) => updateNfeForm('amount', event.target.value)} type="number" value={nfeForm.amount} />
-            <Input id="nfe-recipient" label="Destinatario" onChange={(event) => updateNfeForm('recipientName', event.target.value)} value={nfeForm.recipientName} />
-            <Input id="nfe-recipient-doc" label="CPF/CNPJ destinatario" onChange={(event) => updateNfeForm('recipientDocument', event.target.value)} value={nfeForm.recipientDocument} />
-            <Input id="nfe-operation" label="Tipo de operacao" onChange={(event) => updateNfeForm('operationType', event.target.value)} value={nfeForm.operationType} />
-            <label className="block space-y-2 text-sm font-medium text-slate-700 md:col-span-2">
-              <span>Descricao dos produtos/servicos</span>
-              <textarea
-                className="min-h-28 w-full rounded-xl border border-slate-200 p-4 text-sm outline-none focus:border-indigo-500"
-                onChange={(event) => updateNfeForm('description', event.target.value)}
-                value={nfeForm.description}
-              />
-            </label>
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 md:col-span-2">
-              A emissao autorizada exige gerar XML no layout NF-e, assinar com certificado e chamar autorizacao por UF.
-              A tela salva o rascunho; o proximo passo do backend direto e a autorizacao NF-e.
-            </div>
-            <div className="md:col-span-2">
-              <Button type="submit">Salvar rascunho para emissao</Button>
-            </div>
-          </form>
-        </section>
+        <NfeEmissionForm
+          certificate={selectedCertificate}
+          client={selectedClient}
+          key={`${selectedClient?.id ?? 'sem-cliente'}-${selectedCertificate?.id ?? 'sem-certificado'}`}
+          onDocumentsChanged={async () => {
+            await loadDocuments()
+            await loadSyncState()
+          }}
+          onError={setError}
+          onFeedback={setFeedback}
+          organizationId={organizationId}
+          readiness={emissionReadiness}
+        />
       )}
 
       {tab === 'status' && (

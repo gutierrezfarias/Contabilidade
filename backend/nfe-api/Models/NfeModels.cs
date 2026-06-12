@@ -68,6 +68,14 @@ public sealed record AssinarXmlRequest
     public string DocumentId { get; init; } = "";
 }
 
+public sealed record NfeDocumentRequest
+{
+    public string OrganizationId { get; init; } = "";
+    public string ClientId { get; init; } = "";
+    public string CertificateId { get; init; } = "";
+    public string DocumentId { get; init; } = "";
+}
+
 public sealed record ConsultarRetornoRequest
 {
     public string OrganizationId { get; init; } = "";
@@ -113,13 +121,19 @@ public sealed record NfePayload
     public string NaturezaOperacao { get; init; } = "";
     public string Serie { get; init; } = "1";
     public string Numero { get; init; } = "";
+    public string DataEmissao { get; init; } = "";
     public string TipoOperacao { get; init; } = "saida";
+    public string DestinoOperacao { get; init; } = "";
     public string Finalidade { get; init; } = "normal";
     public string IndicadorPresenca { get; init; } = "0";
+    public string ConsumidorFinal { get; init; } = "1";
     public string InformacoesAdicionais { get; init; } = "";
     public NfeParty Destinatario { get; init; } = new();
     public List<NfeItem> Itens { get; init; } = [];
     public NfePayment Pagamento { get; init; } = new();
+    public List<NfePayment> Pagamentos { get; init; } = [];
+    public NfeTransport Transporte { get; init; } = new();
+    public NfeTotals Totais { get; init; } = new();
 }
 
 public sealed record NfeParty
@@ -144,28 +158,74 @@ public sealed record NfeParty
 
 public sealed record NfeItem
 {
+    public string ProductId { get; init; } = "";
+    public string ProductGroupId { get; init; } = "";
     public string Codigo { get; init; } = "";
     public string Descricao { get; init; } = "";
+    public string Gtin { get; init; } = "";
     public string Ncm { get; init; } = "";
+    public string Cest { get; init; } = "";
     public string Cfop { get; init; } = "";
     public string Unidade { get; init; } = "UN";
     public decimal Quantidade { get; init; }
     public decimal ValorUnitario { get; init; }
     public decimal ValorTotal { get; init; }
+    public decimal Desconto { get; init; }
+    public decimal Frete { get; init; }
+    public decimal Seguro { get; init; }
+    public decimal OutrasDespesas { get; init; }
     public string OrigemIcms { get; init; } = "0";
     public string CstIcms { get; init; } = "";
     public string Csosn { get; init; } = "";
+    public decimal ValorBaseIcms { get; init; }
     public decimal AliquotaIcms { get; init; }
+    public decimal ValorIcms { get; init; }
     public string CstPis { get; init; } = "99";
+    public decimal ValorBasePis { get; init; }
     public decimal AliquotaPis { get; init; }
+    public decimal ValorPis { get; init; }
     public string CstCofins { get; init; } = "99";
+    public decimal ValorBaseCofins { get; init; }
     public decimal AliquotaCofins { get; init; }
+    public decimal ValorCofins { get; init; }
+    public string CstIpi { get; init; } = "";
+    public decimal ValorBaseIpi { get; init; }
+    public decimal AliquotaIpi { get; init; }
+    public decimal ValorIpi { get; init; }
+    public string InformacoesAdicionais { get; init; } = "";
 }
 
 public sealed record NfePayment
 {
     public string TipoPagamento { get; init; } = "90";
+    public string Descricao { get; init; } = "";
+    public string IndicadorPagamento { get; init; } = "0";
     public decimal Valor { get; init; }
+}
+
+public sealed record NfeTransport
+{
+    public string ModalidadeFrete { get; init; } = "9";
+    public string TransportadoraNome { get; init; } = "";
+    public string TransportadoraDocumento { get; init; } = "";
+    public string TransportadoraIe { get; init; } = "";
+    public string TransportadoraEndereco { get; init; } = "";
+    public string TransportadoraMunicipio { get; init; } = "";
+    public string TransportadoraUf { get; init; } = "";
+    public string Placa { get; init; } = "";
+    public string UfVeiculo { get; init; } = "";
+    public decimal QuantidadeVolumes { get; init; }
+    public string Especie { get; init; } = "";
+    public decimal PesoLiquido { get; init; }
+    public decimal PesoBruto { get; init; }
+}
+
+public sealed record NfeTotals
+{
+    public decimal ValorFrete { get; init; }
+    public decimal ValorSeguro { get; init; }
+    public decimal ValorDesconto { get; init; }
+    public decimal ValorOutrasDespesas { get; init; }
 }
 
 public sealed record SupabaseCompany
@@ -229,8 +289,12 @@ public sealed record SupabaseNfeDocument
     public string GeneratedXml { get; init; } = "";
     public string SignedXml { get; init; } = "";
     public string AuthorizedXml { get; init; } = "";
+    public string DanfePdfBase64 { get; init; } = "";
     public string ReceiptNumber { get; init; } = "";
     public string Status { get; init; } = "";
+    public NfePayload? EmissionPayload { get; init; }
+    public string FiscalValidationStatus { get; init; } = "";
+    public string FiscalBlockReason { get; init; } = "";
 }
 
 public sealed record SefazSoapResult
@@ -260,7 +324,9 @@ public sealed record NfeOperationResult
     public string ProtocolNumber { get; init; } = "";
     public string DocumentId { get; init; } = "";
     public string DanfePdfBase64 { get; init; } = "";
+    public string Xml { get; init; } = "";
     public List<string> Errors { get; init; } = [];
+    public List<FiscalBlockError> FiscalErrors { get; init; } = [];
 }
 
 public sealed record SefazStatusResult
@@ -285,7 +351,9 @@ public static class NfeText
     public static string Digits(string value) => new(value.Where(char.IsDigit).ToArray());
 
     public static string Decimal(decimal value, int digits = 2) =>
-        value.ToString($"0.{new string('0', digits)}", CultureInfo.InvariantCulture);
+        digits <= 0
+            ? value.ToString("0", CultureInfo.InvariantCulture)
+            : value.ToString($"0.{new string('0', digits)}", CultureInfo.InvariantCulture);
 
     public static string Json(object value) => JsonSerializer.Serialize(value, JsonOptions);
 
