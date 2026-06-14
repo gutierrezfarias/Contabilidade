@@ -69,43 +69,42 @@ function fail(error: { message: string } | null, fallback: string) {
   if (!error) return
   throw new Error(
     error.message.toLowerCase().includes('does not exist')
-      ? 'Execute a migration de NF-e no Supabase.'
+      ? 'Execute a migration de DF-e/NF-e no Supabase.'
       : fallback,
   )
 }
 
-function mapNfe(row: Record<string, unknown>): NfeDocument {
+function mapDfe(row: Record<string, unknown>): NfeDocument {
+  const summary = (row.summary_data ?? {}) as Record<string, unknown>
   return {
     id: String(row.id),
     organizationId: String(row.organization_id),
     clientId: String(row.client_id),
     certificateId: String(row.certificate_id ?? ''),
-    documentModel: String(row.document_model ?? 'NFe'),
-    documentDirection: String(row.document_direction ?? 'recebida') as FiscalDocumentDirection,
+    documentModel: String(row.document_type ?? row.schema_name ?? 'NF-e'),
+    documentDirection: String(row.direction ?? 'recebida') as FiscalDocumentDirection,
     nsu: String(row.nsu ?? ''),
     accessKey: String(row.access_key ?? ''),
-    number: String(row.number ?? ''),
-    series: String(row.series ?? ''),
+    number: String(summary.numero ?? ''),
+    series: String(summary.serie ?? ''),
     issueDate: String(row.issue_date ?? ''),
-    amount: Number(row.amount ?? 0),
-    status: row.status as NfeDocument['status'],
-    emitterName: String(row.emitter_name ?? ''),
-    emitterDocument: String(row.emitter_document ?? ''),
-    destinationName: String(row.destination_name ?? ''),
-    destinationDocument: String(row.destination_document ?? ''),
-    operationType: String(row.operation_type ?? ''),
+    amount: Number(row.total_value ?? 0),
+    status: String(row.nfe_status ?? 'Consultada') as NfeDocument['status'],
+    emitterName: String(row.issuer_name ?? ''),
+    emitterDocument: String(row.issuer_cnpj ?? ''),
+    destinationName: String(row.recipient_name ?? ''),
+    destinationDocument: String(row.recipient_cnpj ?? ''),
+    operationType: String(summary.natOp ?? 'Consulta DF-e'),
     recipientName: String(row.recipient_name ?? ''),
-    recipientDocument: String(row.recipient_document ?? ''),
-    description: String(row.description ?? ''),
-    protocolNumber: String(row.protocol_number ?? ''),
+    recipientDocument: String(row.recipient_cnpj ?? ''),
+    description: String(row.document_type ?? row.schema_name ?? ''),
+    protocolNumber: String(summary.nProt ?? ''),
     manifestationStatus: String(row.manifestation_status ?? 'Pendente'),
-    manifestationDeadline: String(row.manifestation_deadline ?? ''),
-    rawXml: row.raw_xml ? String(row.raw_xml) : undefined,
-    rawSummary: (row.raw_summary ?? undefined) as Record<string, unknown> | undefined,
-    sefazStatusCode: String(row.sefaz_status_code ?? ''),
-    lastConsultedAt: String(row.last_consulted_at ?? ''),
-    xmlUrl: row.xml_url ? String(row.xml_url) : undefined,
-    danfeUrl: row.danfe_url ? String(row.danfe_url) : undefined,
+    manifestationDeadline: '',
+    rawSummary: summary,
+    sefazStatusCode: String(summary.cStat ?? ''),
+    lastConsultedAt: String(row.updated_at ?? ''),
+    xmlUrl: row.has_full_xml ? `/api/dfe/documents/${row.id}/xml` : undefined,
   }
 }
 
@@ -115,15 +114,15 @@ function mapSefazSyncState(row: Record<string, unknown>): SefazSyncState {
     clientId: String(row.client_id ?? ''),
     environment: String(row.environment ?? ''),
     id: String(row.id ?? ''),
-    lastErrorAt: String(row.last_error_at ?? ''),
-    lastErrorMessage: String(row.last_error_message ?? ''),
+    lastErrorAt: '',
+    lastErrorMessage: String(row.status ?? '') === 'error' ? String(row.last_status_message ?? '') : '',
     lastNsu: String(row.last_nsu ?? ''),
     lastStatusCode: String(row.last_status_code ?? ''),
     lastStatusMessage: String(row.last_status_message ?? ''),
-    lastSuccessAt: String(row.last_success_at ?? ''),
+    lastSuccessAt: String(row.last_sync_at ?? ''),
     maxNsu: String(row.max_nsu ?? ''),
     organizationId: String(row.organization_id ?? ''),
-    stateUf: String(row.state_uf ?? ''),
+    stateUf: '',
     updatedAt: String(row.updated_at ?? ''),
   }
 }
@@ -136,10 +135,11 @@ export async function listNfeDocuments(
   if (!organizationId) return []
 
   let query = supabase
-    .from('nfe_documents')
+    .from('nfe_dfe_documents')
     .select('*')
     .eq('organization_id', organizationId)
-    .order('issue_date', { ascending: false })
+    .eq('active', true)
+    .order('issue_date', { ascending: false, nullsFirst: false })
     .order('created_at', { ascending: false })
 
   if (clientId) {
@@ -147,7 +147,7 @@ export async function listNfeDocuments(
   }
 
   if (filters.direction) {
-    query = query.eq('document_direction', filters.direction)
+    query = query.eq('direction', filters.direction)
   }
 
   if (filters.dateRange && filters.dateRange !== 'all') {
@@ -161,7 +161,7 @@ export async function listNfeDocuments(
 
   const { data, error } = await query
   fail(error, 'Nao foi possivel carregar NF-e.')
-  const documents = (data ?? []).map(mapNfe)
+  const documents = (data ?? []).map((row) => mapDfe(row as Record<string, unknown>))
 
   const search = (filters.search ?? '').trim().toLowerCase()
   if (!search) return documents
@@ -211,7 +211,7 @@ export async function getLatestSefazSyncState(input: {
   if (!input.organizationId || !input.clientId || !input.certificateId) return null
 
   const { data, error } = await supabase
-    .from('sefaz_sync_state')
+    .from('nfe_dfe_sync_states')
     .select('*')
     .eq('organization_id', input.organizationId)
     .eq('client_id', input.clientId)
@@ -249,7 +249,13 @@ export async function consultDfeFromSefaz(input: {
       authorization: `Bearer ${token}`,
       'content-type': 'application/json',
     },
-    body: JSON.stringify(input),
+    body: JSON.stringify({
+      certificateId: input.certificateId,
+      clientId: input.clientId,
+      maxCycles: input.queryType === 'complete' ? 8 : 3,
+      organizationId: input.organizationId,
+      resetNsu: input.queryType === 'complete',
+    }),
   })
   const result = (await response.json().catch(() => ({}))) as Partial<SefazConsultationResponse> & {
     error?: string
@@ -300,6 +306,34 @@ export async function consultNfeByAccessKey(input: {
     statusCode: result.statusCode ?? '',
     statusMessage: result.statusMessage ?? '',
   }
+}
+
+export async function getDfeDocumentXml(input: {
+  clientId: string
+  documentId: string
+  organizationId: string
+}) {
+  const token = await getAccessToken()
+  const params = new URLSearchParams({
+    clientId: input.clientId,
+    organizationId: input.organizationId,
+  })
+  const response = await fetch(`/api/dfe/documents/${input.documentId}/xml?${params.toString()}`, {
+    headers: {
+      authorization: `Bearer ${token}`,
+    },
+  })
+  const result = (await response.json().catch(() => ({}))) as {
+    error?: string
+    ok?: boolean
+    xml?: string
+  }
+
+  if (!response.ok || result.ok === false || !result.xml) {
+    throw new Error(result.error ?? 'Nao foi possivel baixar o XML privado.')
+  }
+
+  return result.xml
 }
 
 export async function manifestNfeDocument(input: {

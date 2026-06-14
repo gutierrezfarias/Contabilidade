@@ -21,6 +21,7 @@ import {
 import { resolveOrganizationId } from '../../../services/platformService'
 import {
   consultDfeFromSefaz,
+  getDfeDocumentXml,
   consultNfeByAccessKey,
   getLatestSefazSyncState,
   listNfeDocuments,
@@ -487,7 +488,23 @@ export function Sefaz() {
     )
   }
 
-  function downloadXml(document: NfeDocument) {
+  async function downloadXml(document: NfeDocument) {
+    if (document.xmlUrl?.startsWith('/api/dfe/')) {
+      try {
+        const xml = await getDfeDocumentXml({
+          clientId: document.clientId,
+          documentId: document.id,
+          organizationId: document.organizationId,
+        })
+        downloadTextFile(`${document.accessKey || document.nsu || 'dfe'}.xml`, xml)
+        return
+      } catch (downloadError) {
+        setError(downloadError instanceof Error ? downloadError.message : 'Nao foi possivel baixar o XML.')
+        setFeedback('')
+        return
+      }
+    }
+
     if (document.xmlUrl) {
       window.open(document.xmlUrl, '_blank', 'noopener,noreferrer')
       return

@@ -32,6 +32,7 @@ builder.Services.AddHttpClient();
 builder.Services.AddSingleton<NfeEndpointResolver>();
 builder.Services.AddScoped<CertificateService>();
 builder.Services.AddScoped<DanfePdfService>();
+builder.Services.AddScoped<DfeXmlProcessorService>();
 builder.Services.AddScoped<FiscalRuleEngineService>();
 builder.Services.AddScoped<NcmCatalogService>();
 builder.Services.AddScoped<NfeAuthorizationService>();
@@ -41,6 +42,8 @@ builder.Services.AddScoped<NfeSchemaValidationService>();
 builder.Services.AddScoped<NfeSignatureService>();
 builder.Services.AddScoped<NfeXmlBuilderService>();
 builder.Services.AddScoped<SefazSoapClientService>();
+builder.Services.AddScoped<SefazDfeDistributionService>();
+builder.Services.AddScoped<SupabaseDfeRepository>();
 builder.Services.AddScoped<SupabaseFiscalRepository>();
 builder.Services.AddScoped<SupabaseNfeRepository>();
 
@@ -289,6 +292,257 @@ app.MapGet("/api/reference-data/ncm/search", async (
     catch (Exception error)
     {
         return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapPost("/api/dfe/sync", async (
+    DfeSyncRequest request,
+    HttpContext httpContext,
+    SefazDfeDistributionService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var result = await service.SyncAsync(
+            request,
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return result.Success ? Results.Ok(result) : Results.BadRequest(result);
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { success = false, ok = false, error = error.Message });
+    }
+});
+
+app.MapGet("/api/dfe/sync/status", async (
+    string organizationId,
+    string clientId,
+    string certificateId,
+    HttpContext httpContext,
+    SupabaseNfeRepository nfeRepository,
+    SupabaseDfeRepository dfeRepository,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var userId = await nfeRepository.RequireUserAsync(
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        await nfeRepository.EnsureOrganizationAccessAsync(userId, organizationId, cancellationToken);
+        await nfeRepository.GetCertificateAsync(organizationId, clientId, certificateId, cancellationToken);
+        var state = await dfeRepository.GetLatestSyncStateAsync(organizationId, clientId, certificateId, cancellationToken);
+        return Results.Ok(new { ok = true, state });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapGet("/api/dfe/documents", async (
+    string organizationId,
+    string clientId,
+    string? direction,
+    string? search,
+    int? limit,
+    int? offset,
+    HttpContext httpContext,
+    SupabaseNfeRepository nfeRepository,
+    SupabaseDfeRepository dfeRepository,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var userId = await nfeRepository.RequireUserAsync(
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        await nfeRepository.EnsureOrganizationAccessAsync(userId, organizationId, cancellationToken);
+        await nfeRepository.GetCompanyAsync(organizationId, clientId, cancellationToken);
+        var documents = await dfeRepository.ListDocumentsAsync(
+            organizationId,
+            clientId,
+            direction,
+            search,
+            limit ?? 50,
+            offset ?? 0,
+            cancellationToken);
+        return Results.Ok(new { ok = true, documents });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapGet("/api/dfe/documents/{id}", async (
+    string id,
+    string organizationId,
+    string clientId,
+    HttpContext httpContext,
+    SupabaseNfeRepository nfeRepository,
+    SupabaseDfeRepository dfeRepository,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var userId = await nfeRepository.RequireUserAsync(
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        await nfeRepository.EnsureOrganizationAccessAsync(userId, organizationId, cancellationToken);
+        var document = await dfeRepository.GetDocumentAsync(organizationId, clientId, id, cancellationToken);
+        return Results.Ok(new { ok = true, document });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapGet("/api/dfe/documents/{id}/xml", async (
+    string id,
+    string organizationId,
+    string clientId,
+    HttpContext httpContext,
+    SupabaseNfeRepository nfeRepository,
+    SupabaseDfeRepository dfeRepository,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var userId = await nfeRepository.RequireUserAsync(
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        await nfeRepository.EnsureOrganizationAccessAsync(userId, organizationId, cancellationToken);
+        var document = await dfeRepository.GetDocumentAsync(organizationId, clientId, id, cancellationToken);
+        var xml = await dfeRepository.ReadPrivateXmlAsync(document.XmlStoragePath, cancellationToken);
+        return Results.Text(xml, "application/xml");
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapGet("/api/dfe/documents/{id}/events", async (
+    string id,
+    string organizationId,
+    string clientId,
+    HttpContext httpContext,
+    SupabaseNfeRepository nfeRepository,
+    SupabaseDfeRepository dfeRepository,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var userId = await nfeRepository.RequireUserAsync(
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        await nfeRepository.EnsureOrganizationAccessAsync(userId, organizationId, cancellationToken);
+        await dfeRepository.GetDocumentAsync(organizationId, clientId, id, cancellationToken);
+        var events = await dfeRepository.ListEventsAsync(organizationId, clientId, id, cancellationToken);
+        return Results.Ok(new { ok = true, events });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapPost("/api/dfe/query/nsu", async (
+    DfeQueryNsuRequest request,
+    HttpContext httpContext,
+    SefazDfeDistributionService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var result = await service.QueryNsuAsync(
+            request,
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return Results.Ok(result);
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { success = false, ok = false, error = error.Message });
+    }
+});
+
+app.MapPost("/api/dfe/query/access-key", async (
+    DfeQueryAccessKeyRequest request,
+    HttpContext httpContext,
+    SefazDfeDistributionService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var result = await service.QueryAccessKeyAsync(
+            request,
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return Results.Ok(result);
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { success = false, ok = false, error = error.Message });
+    }
+});
+
+app.MapPost("/api/dfe/documents/{id}/manifest", async (
+    string id,
+    DfeManifestRequest request,
+    HttpContext httpContext,
+    SefazDfeDistributionService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var result = await service.ManifestAsync(
+            request with { DocumentId = string.IsNullOrWhiteSpace(request.DocumentId) ? id : request.DocumentId },
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return Results.Ok(result);
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { success = false, ok = false, error = error.Message });
     }
 });
 

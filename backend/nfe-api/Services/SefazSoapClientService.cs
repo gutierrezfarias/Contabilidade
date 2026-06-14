@@ -89,6 +89,26 @@ public sealed class SefazSoapClientService(
             cancellationToken);
     }
 
+    public Task<SefazSoapResult> DistributeDfeAsync(
+        string ambiente,
+        string distDfeXml,
+        X509Certificate2 certificate,
+        CancellationToken cancellationToken)
+    {
+        var endpoint = ambiente.Equals("producao", StringComparison.OrdinalIgnoreCase)
+            ? "https://www1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx"
+            : "https://hom1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx";
+
+        return PostSoapAsync(
+            endpoint,
+            "NFeDistribuicaoDFe",
+            "http://www.portalfiscal.inf.br/nfe/wsdl/NFeDistribuicaoDFe/nfeDistDFeInteresse",
+            "nfeDistDFeInteresse",
+            distDfeXml,
+            certificate,
+            cancellationToken);
+    }
+
     public Task<SefazSoapResult> InutilizeAsync(
         string uf,
         string ambiente,
@@ -235,6 +255,7 @@ public sealed class SefazSoapClientService(
         if (operation.Contains("RetAutorizacao", StringComparison.OrdinalIgnoreCase)) return "NFeRetAutorizacao4";
         if (operation.Contains("Autorizacao", StringComparison.OrdinalIgnoreCase)) return "NFeAutorizacao4";
         if (operation.Contains("Consulta", StringComparison.OrdinalIgnoreCase)) return "NFeConsultaProtocolo4";
+        if (operation.Contains("DistDFe", StringComparison.OrdinalIgnoreCase)) return "NFeDistribuicaoDFe";
         if (operation.Contains("RecepcaoEvento", StringComparison.OrdinalIgnoreCase)) return "NFeRecepcaoEvento4";
         if (operation.Contains("Inutilizacao", StringComparison.OrdinalIgnoreCase)) return "NFeInutilizacao4";
         return "NFeStatusServico4";
