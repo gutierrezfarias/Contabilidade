@@ -22,12 +22,20 @@ type NfeInput = Omit<
   | 'lastConsultedAt'
 >
 type SefazConsultationResponse = {
-  documentsImported: number
+  documentsImported?: number
+  error?: string
+  ignoredCount?: number
+  insertedCount?: number
   lastNsu?: string
   maxNsu?: string
-  message: string
+  message?: string
+  ok?: boolean
+  receivedCount?: number
+  status?: number
   statusCode?: string
   statusMessage?: string
+  success?: boolean
+  updatedCount?: number
 }
 
 type SefazAccessKeyResponse = {
@@ -38,6 +46,18 @@ type SefazAccessKeyResponse = {
 }
 
 export type SefazQueryType = 'summary' | 'complete'
+
+export type SefazConsultationResult = {
+  ignoredCount: number
+  insertedCount: number
+  lastNsu: string
+  maxNsu: string
+  message: string
+  receivedCount: number
+  statusCode: string
+  statusMessage: string
+  updatedCount: number
+}
 
 export type SefazDocumentFilters = {
   dateRange?: string
@@ -235,15 +255,111 @@ async function getAccessToken() {
   return token
 }
 
+function readString(source: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) {
+    const value = source[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+
+  return ''
+}
+
+function readNumber(source: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) {
+    const value = source[key]
+    const number = Number(value)
+    if (Number.isFinite(number)) return number
+  }
+
+  return 0
+}
+
+function readBoolean(source: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) {
+    const value = source[key]
+    if (typeof value === 'boolean') return value
+  }
+
+  return undefined
+}
+
+function recommendedAction(httpStatus: number, result: Record<string, unknown>) {
+  const code = readString(result, 'statusCode', 'StatusCode')
+  const message = `${readString(result, 'error', 'Error')} ${readString(result, 'message', 'Message')} ${readString(result, 'statusMessage', 'StatusMessage')}`.toLowerCase()
+
+  if (httpStatus === 401 || message.includes('login') || message.includes('token')) {
+    return 'Entre novamente no sistema e tente outra vez.'
+  }
+
+  if (httpStatus === 403 || message.includes('acesso') || message.includes('permiss')) {
+    return 'Confirme se o usuario possui acesso a organizacao e ao cliente selecionado.'
+  }
+
+  if (message.includes('certificado') && (message.includes('senha') || message.includes('password'))) {
+    return 'Revise a senha do certificado no cadastro do cliente.'
+  }
+
+  if (message.includes('certificado') && (message.includes('venc') || message.includes('valid'))) {
+    return 'Atualize o certificado digital A1/PFX/P12 do cliente.'
+  }
+
+  if (code === '108' || code === '109') {
+    return 'Aguarde a SEFAZ estabilizar e tente novamente em alguns minutos.'
+  }
+
+  if (code === '656' || message.includes('consumo indevido')) {
+    return 'Aguarde o intervalo de bloqueio da SEFAZ antes de consultar novamente.'
+  }
+
+  if (message.includes('soap') || message.includes('webservice') || message.includes('endpoint')) {
+    return 'Verifique a disponibilidade do webservice SEFAZ e a configuracao do backend fiscal.'
+  }
+
+  if (httpStatus >= 500) {
+    return 'Verifique os logs seguros do backend fiscal no Railway.'
+  }
+
+  return 'Revise cliente, certificado, ambiente e tente novamente.'
+}
+
+function buildSefazError(httpStatus: number, result: Record<string, unknown>) {
+  const code = readString(result, 'statusCode', 'StatusCode') || 'Nao informado'
+  const message =
+    readString(result, 'statusMessage', 'StatusMessage') ||
+    readString(result, 'message', 'Message') ||
+    readString(result, 'error', 'Error') ||
+    'Nao foi possivel consultar NF-e/DF-e na SEFAZ.'
+  const detail = readString(result, 'error', 'Error')
+
+  return [
+    `HTTP ${httpStatus}.`,
+    `Codigo: ${code}.`,
+    `Mensagem: ${message}.`,
+    detail && detail !== message ? `Detalhe seguro: ${detail}.` : '',
+    `Acao recomendada: ${recommendedAction(httpStatus, result)}`,
+  ].filter(Boolean).join(' ')
+}
+
+function logSafeDfeCall(endpoint: string, httpStatus: number, statusCode?: string) {
+  console.info('[SEFAZ DF-e]', {
+    endpoint,
+    httpStatus,
+    momento: new Date().toISOString(),
+    statusCode: statusCode || 'sem-cStat',
+  })
+}
+
 export async function consultDfeFromSefaz(input: {
   certificateId: string
   clientId: string
   direction?: FiscalDocumentDirection
+  environment?: string
   organizationId: string
   queryType?: SefazQueryType
-}) {
+}): Promise<SefazConsultationResult> {
   const token = await getAccessToken()
-  const response = await fetch('/api/sefaz/consultar-dfe', {
+  const endpoint = '/api/dfe/sync'
+  const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${token}`,
@@ -252,27 +368,37 @@ export async function consultDfeFromSefaz(input: {
     body: JSON.stringify({
       certificateId: input.certificateId,
       clientId: input.clientId,
-      maxCycles: input.queryType === 'complete' ? 8 : 3,
+      environment: input.environment ?? 'homologacao',
+      maxCycles: input.queryType === 'complete' ? 8 : 1,
       organizationId: input.organizationId,
-      resetNsu: input.queryType === 'complete',
+      resetNsu: false,
     }),
   })
-  const result = (await response.json().catch(() => ({}))) as Partial<SefazConsultationResponse> & {
-    error?: string
-    ok?: boolean
+  const result = (await response.json().catch(() => ({}))) as Partial<SefazConsultationResponse> & Record<string, unknown>
+  const success = readBoolean(result, 'success', 'Success')
+  const ok = readBoolean(result, 'ok', 'Ok')
+  const statusCode = readString(result, 'statusCode', 'StatusCode')
+  logSafeDfeCall(endpoint, response.status, statusCode)
+
+  if (!response.ok || ok === false || success === false) {
+    throw new Error(buildSefazError(response.status, result))
   }
 
-  if (!response.ok || result.ok === false) {
-    throw new Error(result.error ?? 'Nao foi possivel consultar NF-e/DF-e na SEFAZ.')
-  }
+  const receivedCount = readNumber(result, 'receivedCount', 'ReceivedCount', 'documentsImported')
+  const insertedCount = readNumber(result, 'insertedCount', 'InsertedCount')
+  const updatedCount = readNumber(result, 'updatedCount', 'UpdatedCount')
+  const ignoredCount = readNumber(result, 'ignoredCount', 'IgnoredCount')
 
   return {
-    documentsImported: Number(result.documentsImported ?? 0),
-    lastNsu: result.lastNsu,
-    maxNsu: result.maxNsu,
-    message: result.message ?? 'Consulta SEFAZ concluida.',
-    statusCode: result.statusCode,
-    statusMessage: result.statusMessage,
+    ignoredCount,
+    insertedCount,
+    lastNsu: readString(result, 'lastNsu', 'LastNsu'),
+    maxNsu: readString(result, 'maxNsu', 'MaxNsu'),
+    message: readString(result, 'message', 'Message') || 'Consulta SEFAZ concluida.',
+    receivedCount,
+    statusCode,
+    statusMessage: readString(result, 'statusMessage', 'StatusMessage'),
+    updatedCount,
   }
 }
 

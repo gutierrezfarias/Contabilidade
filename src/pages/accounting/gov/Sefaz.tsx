@@ -355,6 +355,8 @@ export function Sefaz() {
   }
 
   async function refreshDocuments(queryType: SefazQueryType) {
+    if (isRefreshing) return
+
     if (!dfeReadiness.isReady) {
       setError(dfeReadiness.errors[0]?.message ?? 'Revise as pendencias antes de consultar a SEFAZ.')
       setFeedback('')
@@ -383,15 +385,23 @@ export function Sefaz() {
         certificateId,
         clientId,
         direction: documentDirection,
+        environment: selectedCertificate?.environment ?? 'homologacao',
         organizationId,
         queryType,
       })
       setLastConsultation(new Date().toLocaleString('pt-BR'))
-      const sefazReturn = result.statusCode
-        ? ` Retorno SEFAZ ${result.statusCode}${result.statusMessage ? ` - ${result.statusMessage}` : ''}.`
-        : ''
+      const sefazReturn = [
+        result.statusCode ? `cStat: ${result.statusCode}` : '',
+        result.statusMessage ? `xMotivo: ${result.statusMessage}` : '',
+        result.lastNsu ? `ultNSU: ${result.lastNsu}` : '',
+        result.maxNsu ? `maxNSU: ${result.maxNsu}` : '',
+        `recebidos: ${result.receivedCount}`,
+        `inseridos: ${result.insertedCount}`,
+        `atualizados: ${result.updatedCount}`,
+        result.ignoredCount ? `ignorados: ${result.ignoredCount}` : '',
+      ].filter(Boolean).join(' | ')
       setFeedback(
-        `${result.message}${sefazReturn}${result.lastNsu ? ` Ultimo NSU: ${result.lastNsu}.` : ''}`,
+        `${result.message}${sefazReturn ? ` ${sefazReturn}.` : ''}`,
       )
       await loadDocuments()
       await loadSyncState()
