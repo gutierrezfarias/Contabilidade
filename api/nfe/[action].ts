@@ -1,4 +1,4 @@
-import { proxyNfePost, type VercelRequest, type VercelResponse } from '../_utils/nfeBackendProxy'
+import { proxyNfePost, type VercelRequest, type VercelResponse } from '../_utils/nfeBackendProxy.js'
 
 type RoutedRequest = VercelRequest & {
   query?: {

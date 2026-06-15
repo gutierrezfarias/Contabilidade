@@ -1,7 +1,7 @@
 /// <reference types="node" />
 
 import process from 'node:process'
-import type { VercelRequest, VercelResponse } from '../_utils/nfeBackendProxy'
+import type { VercelRequest, VercelResponse } from '../_utils/nfeBackendProxy.js'
 
 type RoutedRequest = VercelRequest & {
   query?: Record<string, string | string[] | undefined>
@@ -24,10 +24,14 @@ function first(value: string | string[] | undefined) {
 function backendBaseUrl() {
   const value = String(process.env.SEFAZ_BACKEND_URL ?? '').trim().replace(/\/$/, '')
   if (!value || /example\.com|sua-api|seu-backend|api-fiscal/i.test(value)) {
-    throw new Error('Configure SEFAZ_BACKEND_URL na Vercel com a URL real do backend fiscal.')
+    throw new Error('SEFAZ_BACKEND_URL nao configurada.')
   }
 
   return value
+}
+
+function statusForProxyError(error: unknown) {
+  return error instanceof Error && error.message.includes('SEFAZ_BACKEND_URL') ? 500 : 400
 }
 
 function pathFromQuery(query: RoutedRequest['query']) {
@@ -38,7 +42,7 @@ function pathFromQuery(query: RoutedRequest['query']) {
 
 function searchFromQuery(query: RoutedRequest['query']) {
   const search = new URLSearchParams()
-  for (const [key, value] of Object.entries(query ?? {})) {
+  for (const [key, value] of Object.entries(query ?? {}) as Array<[string, string | string[] | undefined]>) {
     if (key === 'path') continue
     const item = first(value)
     if (item) search.set(key, item)
@@ -75,7 +79,7 @@ export default async function handler(req: RoutedRequest, res: VercelResponse) {
     const result = (await response.json().catch(() => ({}))) as Record<string, unknown>
     return res.status(response.status).json(result)
   } catch (error) {
-    return res.status(400).json({
+    return res.status(statusForProxyError(error)).json({
       ok: false,
       error: error instanceof Error ? error.message : 'Nao foi possivel chamar o backend DF-e.',
     })

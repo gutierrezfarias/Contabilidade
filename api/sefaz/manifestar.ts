@@ -1,7 +1,7 @@
 /// <reference types="node" />
 
 import process from 'node:process'
-import type { VercelRequest, VercelResponse } from '../_utils/nfeBackendProxy'
+import type { VercelRequest, VercelResponse } from '../_utils/nfeBackendProxy.js'
 
 function getHeader(req: VercelRequest, name: string) {
   const value = Object.entries(req.headers).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1]

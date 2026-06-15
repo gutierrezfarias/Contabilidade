@@ -30,10 +30,14 @@ function parseBody(body: unknown) {
 function backendBaseUrl() {
   const value = String(process.env.SEFAZ_BACKEND_URL ?? '').trim().replace(/\/$/, '')
   if (!value || /example\.com|sua-api|seu-backend|api-fiscal/i.test(value)) {
-    throw new Error('Configure SEFAZ_BACKEND_URL na Vercel com a URL real do backend fiscal.')
+    throw new Error('SEFAZ_BACKEND_URL nao configurada.')
   }
 
   return value
+}
+
+function statusForProxyError(error: unknown) {
+  return error instanceof Error && error.message.includes('SEFAZ_BACKEND_URL') ? 500 : 400
 }
 
 export async function proxyNfePost(req: VercelRequest, res: VercelResponse, path: string) {
@@ -59,7 +63,7 @@ export async function proxyNfePost(req: VercelRequest, res: VercelResponse, path
 
     return res.status(response.status).json(result)
   } catch (error) {
-    return res.status(400).json({
+    return res.status(statusForProxyError(error)).json({
       ok: false,
       error: error instanceof Error ? error.message : 'Nao foi possivel chamar o backend fiscal.',
     })
@@ -95,7 +99,7 @@ export async function proxyFiscalBackend(
 
     return res.status(response.status).json(result)
   } catch (error) {
-    return res.status(400).json({
+    return res.status(statusForProxyError(error)).json({
       ok: false,
       error: error instanceof Error ? error.message : 'Nao foi possivel chamar o backend fiscal.',
     })
