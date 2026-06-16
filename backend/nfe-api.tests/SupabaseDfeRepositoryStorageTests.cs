@@ -71,16 +71,17 @@ public sealed class SupabaseDfeRepositoryStorageTests
         Assert.DoesNotContain("service_role", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("jwt", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("senha", error.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("/rest/v1/nfe_dfe_documents", string.Join("\n", handler.Requests.Select(item => item.Uri.AbsolutePath)));
+        Assert.DoesNotContain(handler.Requests, item =>
+            item.Uri.AbsolutePath.Contains("/rest/v1/nfe_dfe_documents", StringComparison.Ordinal)
+            && item.Method != HttpMethod.Get);
     }
 
     [Fact]
-    public async Task SaveProcessedDocumentsAsync_retry_updates_existing_document_without_duplicate_insert()
+    public async Task SaveProcessedDocumentsAsync_existing_complete_xml_is_not_uploaded_again()
     {
         ConfigureSupabaseEnv();
         var documentExists = false;
         var inserts = 0;
-        var patches = 0;
         var handler = new RecordingHandler(request =>
         {
             if (IsStorageUpload(request))
@@ -100,22 +101,18 @@ public sealed class SupabaseDfeRepositoryStorageTests
                 return Task.FromResult(Json($"[{DocumentJson()}]"));
             }
 
-            if (request.Method == HttpMethod.Patch)
-            {
-                patches += 1;
-                return Task.FromResult(Empty(HttpStatusCode.NoContent));
-            }
-
             return Task.FromResult(Empty(HttpStatusCode.NoContent));
         });
         var repository = Repository(handler);
 
-        await repository.SaveProcessedDocumentsAsync([ProcessedDocument("<procNFe>1</procNFe>")], CancellationToken.None);
-        await repository.SaveProcessedDocumentsAsync([ProcessedDocument("<procNFe>1</procNFe>")], CancellationToken.None);
+        var first = await repository.SaveProcessedDocumentsAsync([ProcessedDocument("<procNFe>1</procNFe>")], CancellationToken.None);
+        var second = await repository.SaveProcessedDocumentsAsync([ProcessedDocument("<procNFe>1</procNFe>")], CancellationToken.None);
 
         Assert.Equal(1, inserts);
-        Assert.Equal(1, patches);
-        Assert.Equal(2, handler.Requests.Count(item => IsStorageUpload(item.Method, item.Uri)));
+        Assert.Equal(1, first.StorageUploads);
+        Assert.Equal(0, second.StorageUploads);
+        Assert.Equal(1, second.IgnoredExisting);
+        Assert.Equal(1, handler.Requests.Count(item => IsStorageUpload(item.Method, item.Uri)));
     }
 
     private const string OrganizationId = "org-1";

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.Xml.Linq;
 using ContHub.NfeApi.Models;
 
@@ -10,9 +11,11 @@ public sealed class SefazDfeDistributionService(
     CertificateService certificateService,
     DfeXmlProcessorService xmlProcessor,
     SefazSoapClientService soapClient,
-    NfeSignatureService signatureService)
+    NfeSignatureService signatureService,
+    ILogger<SefazDfeDistributionService> logger)
 {
     private static readonly XNamespace NfeNs = "http://www.portalfiscal.inf.br/nfe";
+    private static readonly ConcurrentDictionary<string, DateTimeOffset> PointQueryCooldowns = new();
     private static readonly IReadOnlyDictionary<string, string> ManifestationDescriptions = new Dictionary<string, string>
     {
         ["210200"] = "Confirmacao da Operacao",
@@ -26,6 +29,7 @@ public sealed class SefazDfeDistributionService(
         string authorizationHeader,
         CancellationToken cancellationToken)
     {
+        var syncRunId = NormalizeSyncRunId(request.SyncRunId);
         var context = await LoadContextAsync(
             request.OrganizationId,
             request.ClientId,
@@ -44,18 +48,38 @@ public sealed class SefazDfeDistributionService(
         var inserted = 0;
         var updated = 0;
         var ignored = 0;
-        var currentNsu = request.ResetNsu ? "000000000000000" : state.LastNsu;
+        var ignoredExisting = 0;
+        var completedExisting = 0;
+        var sefazRequests = 0;
+        var dbReads = 2;
+        var dbWrites = 0;
+        var storageUploads = 0;
+        var currentNsu = state.LastNsu;
         var persistedNsu = currentNsu;
         var maxNsu = state.MaxNsu;
         var statusCode = "";
         var statusMessage = "";
+        DateTimeOffset? nextAllowedSyncAt = null;
+
+        logger.LogInformation(
+            "DFE_SYNC_START syncRunId={SyncRunId} organizationId={OrganizationId} clientId={ClientId} certificateId={CertificateId} cnpj={Cnpj} environment={Environment} queryType={QueryType} startNsu={StartNsu} maxCycles={MaxCycles}",
+            syncRunId,
+            context.Company.OrganizationId,
+            context.Company.Id,
+            context.Certificate.Id,
+            MaskCnpj(context.Cnpj),
+            context.Environment,
+            NormalizeQueryType(request.QueryType),
+            currentNsu,
+            DfeSyncPolicy.NormalizeMaxCycles(request.MaxCycles));
 
         await dfeRepository.AcquireLockAsync(state, lockToken, cancellationToken);
+        dbWrites += 1;
 
         try
         {
             using var certificate = certificateService.LoadA1Certificate(context.Certificate);
-            var cycles = Math.Clamp(request.MaxCycles <= 0 ? 3 : request.MaxCycles, 1, 10);
+            var cycles = DfeSyncPolicy.NormalizeMaxCycles(request.MaxCycles);
             for (var cycle = 0; cycle < cycles; cycle += 1)
             {
                 var xml = xmlProcessor.BuildDistNsuXml(
@@ -63,6 +87,15 @@ public sealed class SefazDfeDistributionService(
                     context.Uf,
                     context.Environment,
                     currentNsu);
+                logger.LogInformation(
+                    "DFE_SEFAZ_REQUEST syncRunId={SyncRunId} cycle={Cycle} maxCycles={MaxCycles} nsu={Nsu} environment={Environment} cnpj={Cnpj}",
+                    syncRunId,
+                    cycle + 1,
+                    cycles,
+                    currentNsu,
+                    context.Environment,
+                    MaskCnpj(context.Cnpj));
+                sefazRequests += 1;
                 var response = await soapClient.DistributeDfeAsync(
                     context.Environment,
                     xml,
@@ -77,34 +110,93 @@ public sealed class SefazDfeDistributionService(
                     "recebida");
                 statusCode = parsed.StatusCode;
                 statusMessage = parsed.StatusMessage;
-                var persisted = await dfeRepository.SaveProcessedDocumentsAsync(parsed.Documents, cancellationToken);
+                logger.LogInformation(
+                    "DFE_SEFAZ_RESPONSE syncRunId={SyncRunId} cycle={Cycle} cStat={StatusCode} ultNSU={LastNsu} maxNSU={MaxNsu} documents={Documents}",
+                    syncRunId,
+                    cycle + 1,
+                    statusCode,
+                    parsed.LastNsu,
+                    parsed.MaxNsu,
+                    parsed.Documents.Count);
 
-                currentNsu = parsed.LastNsu;
-                maxNsu = parsed.MaxNsu;
-                received += parsed.Documents.Count;
-                inserted += persisted.Inserted;
-                updated += persisted.Updated;
-                ignored += persisted.Ignored;
-                persistedNsu = currentNsu;
-
-                if (MustBackoff(statusCode))
+                if (DfeSyncPolicy.KeepPreviousNsu(statusCode))
                 {
-                    var nextAllowed = DateTimeOffset.UtcNow.AddMinutes(60);
+                    nextAllowedSyncAt = DfeSyncPolicy.NextAllowedAfterResponse(
+                        statusCode,
+                        parsed.Documents.Count,
+                        parsed.LastNsu,
+                        parsed.MaxNsu,
+                        DateTimeOffset.UtcNow);
+                    maxNsu = DfeSyncPolicy.PreserveValidMaxNsu(state.MaxNsu, maxNsu);
                     await dfeRepository.ReleaseLockAsync(
                         state.Id,
                         "blocked",
                         statusCode,
                         statusMessage,
-                        currentNsu,
+                        persistedNsu,
                         maxNsu,
-                        nextAllowed,
+                        nextAllowedSyncAt,
                         state.ConsecutiveErrors + 1,
                         cancellationToken);
-                    await SaveLogAsync(context, startedAt, stopwatch, state.LastNsu, currentNsu, maxNsu, received, inserted, updated, ignored, statusCode, statusMessage, "", cancellationToken);
-                    return Result(false, $"SEFAZ bloqueou temporariamente a sincronizacao: {statusCode} - {statusMessage}", statusCode, statusMessage, currentNsu, maxNsu, received, inserted, updated, ignored);
+                    dbWrites += 1;
+                    await SaveLogAsync(context, startedAt, stopwatch, state.LastNsu, persistedNsu, maxNsu, received, inserted, updated, ignored, statusCode, statusMessage, "", syncRunId, request.QueryType, sefazRequests, dbReads, dbWrites, storageUploads, cancellationToken);
+                    logger.LogWarning(
+                        "DFE_SYNC_STOP syncRunId={SyncRunId} code={Code} cStat={StatusCode} sefazCalls={SefazCalls} dbReads={DbReads} dbWrites={DbWrites} storageUploads={StorageUploads} nextAllowedSyncAt={NextAllowedSyncAt}",
+                        syncRunId,
+                        "DFE_SYNC_COOLDOWN",
+                        statusCode,
+                        sefazRequests,
+                        dbReads,
+                        dbWrites,
+                        storageUploads,
+                        nextAllowedSyncAt);
+                    return Result(
+                        false,
+                        $"Consulta temporariamente bloqueada: {statusCode} - {statusMessage}",
+                        statusCode,
+                        statusMessage,
+                        persistedNsu,
+                        maxNsu,
+                        received,
+                        inserted,
+                        updated,
+                        ignored,
+                        [],
+                        syncRunId,
+                        "DFE_SYNC_COOLDOWN",
+                        nextAllowedSyncAt,
+                        ignoredExisting,
+                        completedExisting,
+                        sefazRequests,
+                        dbReads,
+                        dbWrites,
+                        storageUploads);
                 }
 
-                if (parsed.Documents.Count == 0 || currentNsu == maxNsu || statusCode == "137")
+                var persisted = parsed.Documents.Count == 0
+                    ? new DfePersistResult()
+                    : await dfeRepository.SaveProcessedDocumentsAsync(parsed.Documents, cancellationToken);
+
+                currentNsu = parsed.LastNsu;
+                maxNsu = DfeSyncPolicy.PreserveValidMaxNsu(maxNsu, parsed.MaxNsu);
+                received += parsed.Documents.Count;
+                inserted += persisted.Inserted;
+                updated += persisted.Updated;
+                ignored += persisted.Ignored;
+                ignoredExisting += persisted.IgnoredExisting;
+                completedExisting += persisted.CompletedExisting;
+                storageUploads += persisted.StorageUploads;
+                dbReads += parsed.Documents.Count;
+                dbWrites += persisted.Inserted + persisted.Updated + persisted.IgnoredExisting + persisted.CompletedExisting;
+                persistedNsu = currentNsu;
+                nextAllowedSyncAt = DfeSyncPolicy.NextAllowedAfterResponse(
+                    statusCode,
+                    parsed.Documents.Count,
+                    currentNsu,
+                    maxNsu,
+                    DateTimeOffset.UtcNow);
+
+                if (DfeSyncPolicy.MustStopAfterResponse(statusCode, parsed.Documents.Count, currentNsu, maxNsu))
                 {
                     break;
                 }
@@ -117,11 +209,23 @@ public sealed class SefazDfeDistributionService(
                 statusMessage,
                 currentNsu,
                 maxNsu,
-                null,
+                nextAllowedSyncAt,
                 0,
                 cancellationToken);
-            await SaveLogAsync(context, startedAt, stopwatch, state.LastNsu, currentNsu, maxNsu, received, inserted, updated, ignored, statusCode, statusMessage, "", cancellationToken);
-            return Result(true, MessageFor(statusCode, received), statusCode, statusMessage, currentNsu, maxNsu, received, inserted, updated, ignored);
+            dbWrites += 1;
+            await SaveLogAsync(context, startedAt, stopwatch, state.LastNsu, currentNsu, maxNsu, received, inserted, updated, ignored, statusCode, statusMessage, "", syncRunId, request.QueryType, sefazRequests, dbReads, dbWrites, storageUploads, cancellationToken);
+            logger.LogInformation(
+                "DFE_SYNC_STOP syncRunId={SyncRunId} status=success cStat={StatusCode} sefazCalls={SefazCalls} dbReads={DbReads} dbWrites={DbWrites} storageUploads={StorageUploads} documentsNew={Inserted} documentsIgnored={Ignored} nextAllowedSyncAt={NextAllowedSyncAt}",
+                syncRunId,
+                statusCode,
+                sefazRequests,
+                dbReads,
+                dbWrites,
+                storageUploads,
+                inserted,
+                ignored + ignoredExisting,
+                nextAllowedSyncAt);
+            return Result(true, MessageFor(statusCode, received), statusCode, statusMessage, currentNsu, maxNsu, received, inserted, updated, ignored, [], syncRunId, "", nextAllowedSyncAt, ignoredExisting, completedExisting, sefazRequests, dbReads, dbWrites, storageUploads);
         }
         catch (Exception error)
         {
@@ -132,10 +236,20 @@ public sealed class SefazDfeDistributionService(
                 statusMessage,
                 persistedNsu,
                 maxNsu,
-                DateTimeOffset.UtcNow.AddMinutes(15),
+                DateTimeOffset.UtcNow.Add(DfeSyncPolicy.CooldownAfterError),
                 state.ConsecutiveErrors + 1,
                 cancellationToken);
-            await SaveLogAsync(context, startedAt, stopwatch, state.LastNsu, persistedNsu, maxNsu, received, inserted, updated, ignored, statusCode, statusMessage, Sanitize(error.Message), cancellationToken);
+            dbWrites += 1;
+            await SaveLogAsync(context, startedAt, stopwatch, state.LastNsu, persistedNsu, maxNsu, received, inserted, updated, ignored, statusCode, statusMessage, Sanitize(error.Message), syncRunId, request.QueryType, sefazRequests, dbReads, dbWrites, storageUploads, cancellationToken);
+            logger.LogError(
+                error,
+                "DFE_SYNC_STOP syncRunId={SyncRunId} status=error cStat={StatusCode} sefazCalls={SefazCalls} dbReads={DbReads} dbWrites={DbWrites} storageUploads={StorageUploads}",
+                syncRunId,
+                statusCode,
+                sefazRequests,
+                dbReads,
+                dbWrites,
+                storageUploads);
             throw;
         }
     }
@@ -151,6 +265,7 @@ public sealed class SefazDfeDistributionService(
             request.CertificateId,
             authorizationHeader,
             cancellationToken);
+        EnsurePointQueryAllowed(context, "consNSU");
         var nsu = NormalizeNsu(request.Nsu);
 
         using var certificate = certificateService.LoadA1Certificate(context.Certificate);
@@ -190,6 +305,7 @@ public sealed class SefazDfeDistributionService(
             request.CertificateId,
             authorizationHeader,
             cancellationToken);
+        EnsurePointQueryAllowed(context, "consChNFe");
         var accessKey = NfeText.Digits(request.AccessKey);
         if (accessKey.Length != 44)
         {
@@ -362,9 +478,28 @@ public sealed class SefazDfeDistributionService(
         string statusCode,
         string statusMessage,
         string error,
+        string syncRunId,
+        string queryType,
+        int sefazRequests,
+        int dbReads,
+        int dbWrites,
+        int storageUploads,
         CancellationToken cancellationToken)
     {
         stopwatch.Stop();
+        var safeError = string.IsNullOrWhiteSpace(error)
+            ? ""
+            : Sanitize(error);
+        var diagnostic = string.Join("; ", new[]
+        {
+            $"syncRunId={syncRunId}",
+            $"queryType={NormalizeQueryType(queryType)}",
+            $"sefazCalls={sefazRequests}",
+            $"dbReads={dbReads}",
+            $"dbWrites={dbWrites}",
+            $"storageUploads={storageUploads}",
+            safeError
+        }.Where(value => !string.IsNullOrWhiteSpace(value)));
         await dfeRepository.SaveSyncLogAsync(
             context.Company.OrganizationId,
             context.Company.Id,
@@ -380,7 +515,7 @@ public sealed class SefazDfeDistributionService(
             statusCode,
             statusMessage,
             (int)Math.Min(stopwatch.ElapsedMilliseconds, int.MaxValue),
-            error,
+            diagnostic,
             context.UserId,
             startedAt,
             cancellationToken);
@@ -425,9 +560,6 @@ public sealed class SefazDfeDistributionService(
     private static string EventId(string eventType, string accessKey, int sequence) =>
         $"ID{eventType}{accessKey}{sequence:00}";
 
-    private static bool MustBackoff(string statusCode) =>
-        statusCode is "108" or "109" or "656";
-
     private static string MessageFor(string statusCode, int documents) => statusCode switch
     {
         "137" => "Consulta concluida: nenhum documento localizado.",
@@ -449,17 +581,35 @@ public sealed class SefazDfeDistributionService(
         int inserted,
         int updated,
         int ignored,
-        List<DfeDocument>? documents = null) => new()
+        List<DfeDocument>? documents = null,
+        string syncRunId = "",
+        string code = "",
+        DateTimeOffset? nextAllowedSyncAt = null,
+        int ignoredExisting = 0,
+        int completedExisting = 0,
+        int sefazRequests = 0,
+        int dbReads = 0,
+        int dbWrites = 0,
+        int storageUploads = 0) => new()
     {
+        Code = code,
         Documents = documents ?? [],
+        CompletedExistingCount = completedExisting,
+        DatabaseReadCount = dbReads,
+        DatabaseWriteCount = dbWrites,
         IgnoredCount = ignored,
+        IgnoredExistingCount = ignoredExisting,
         InsertedCount = inserted,
         LastNsu = lastNsu,
         MaxNsu = maxNsu,
         Message = message,
+        NextAllowedSyncAt = nextAllowedSyncAt,
         ReceivedCount = received,
+        SefazRequestCount = sefazRequests,
         StatusCode = statusCode,
         StatusMessage = statusMessage,
+        StorageUploadCount = storageUploads,
+        SyncRunId = syncRunId,
         Success = success,
         UpdatedCount = updated
     };
@@ -489,6 +639,38 @@ public sealed class SefazDfeDistributionService(
 
     private static string Sanitize(string value) =>
         value.Length > 500 ? $"{value[..500]}..." : value;
+
+    private static string NormalizeQueryType(string value) =>
+        value.Equals("complete", StringComparison.OrdinalIgnoreCase) ? "complete" : "summary";
+
+    private static string NormalizeSyncRunId(string value)
+    {
+        var clean = new string((value ?? "").Where(char.IsLetterOrDigit).Take(64).ToArray());
+        return string.IsNullOrWhiteSpace(clean) ? Guid.NewGuid().ToString("N") : clean;
+    }
+
+    private static string MaskCnpj(string cnpj)
+    {
+        var digits = NfeText.Digits(cnpj);
+        return digits.Length == 14
+            ? $"**.***.***/{digits[8..12]}-**"
+            : "***";
+    }
+
+    private static void EnsurePointQueryAllowed(DfeContext context, string operation)
+    {
+        var key = $"{operation}:{context.Environment}:{context.Cnpj}";
+        var now = DateTimeOffset.UtcNow;
+        if (PointQueryCooldowns.TryGetValue(key, out var nextAllowed) && nextAllowed > now)
+        {
+            throw new DfeSyncCooldownException(
+                nextAllowed,
+                "",
+                $"Consulta pontual {operation} em intervalo muito curto. Tente apos {nextAllowed:dd/MM/yyyy HH:mm}.");
+        }
+
+        PointQueryCooldowns[key] = now.AddMinutes(1);
+    }
 
     private sealed record DfeContext(
         SupabaseCompany Company,

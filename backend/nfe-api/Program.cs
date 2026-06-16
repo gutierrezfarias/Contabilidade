@@ -307,11 +307,42 @@ app.MapPost("/api/dfe/sync", async (
             request,
             httpContext.Request.Headers.Authorization.ToString(),
             cancellationToken);
+        if (result.Code == "DFE_SYNC_COOLDOWN")
+        {
+            return Results.Json(result, statusCode: StatusCodes.Status429TooManyRequests);
+        }
+
         return result.Success ? Results.Ok(result) : Results.BadRequest(result);
     }
     catch (UnauthorizedAccessException)
     {
         return Results.Unauthorized();
+    }
+    catch (DfeSyncAlreadyRunningException error)
+    {
+        return Results.Conflict(new
+        {
+            success = false,
+            ok = false,
+            code = error.Code,
+            error = error.Message,
+            message = error.Message,
+            recommendedAction = error.RecommendedAction
+        });
+    }
+    catch (DfeSyncCooldownException error)
+    {
+        return Results.Json(new
+        {
+            success = false,
+            ok = false,
+            code = error.Code,
+            statusCode = error.StatusCode,
+            error = error.Message,
+            message = error.Message,
+            nextAllowedSyncAt = error.NextAllowedSyncAt,
+            recommendedAction = error.RecommendedAction
+        }, statusCode: StatusCodes.Status429TooManyRequests);
     }
     catch (DfeStorageUploadException error)
     {
@@ -506,6 +537,20 @@ app.MapPost("/api/dfe/query/nsu", async (
     {
         return Results.Unauthorized();
     }
+    catch (DfeSyncCooldownException error)
+    {
+        return Results.Json(new
+        {
+            success = false,
+            ok = false,
+            code = error.Code,
+            statusCode = error.StatusCode,
+            error = error.Message,
+            message = error.Message,
+            nextAllowedSyncAt = error.NextAllowedSyncAt,
+            recommendedAction = error.RecommendedAction
+        }, statusCode: StatusCodes.Status429TooManyRequests);
+    }
     catch (DfeStorageUploadException error)
     {
         return Results.BadRequest(new
@@ -544,6 +589,20 @@ app.MapPost("/api/dfe/query/access-key", async (
     catch (UnauthorizedAccessException)
     {
         return Results.Unauthorized();
+    }
+    catch (DfeSyncCooldownException error)
+    {
+        return Results.Json(new
+        {
+            success = false,
+            ok = false,
+            code = error.Code,
+            statusCode = error.StatusCode,
+            error = error.Message,
+            message = error.Message,
+            nextAllowedSyncAt = error.NextAllowedSyncAt,
+            recommendedAction = error.RecommendedAction
+        }, statusCode: StatusCodes.Status429TooManyRequests);
     }
     catch (DfeStorageUploadException error)
     {

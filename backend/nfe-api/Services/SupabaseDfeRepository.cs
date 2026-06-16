@@ -29,6 +29,11 @@ public sealed class SupabaseDfeRepository(IHttpClientFactory httpClientFactory)
         if (existing.ValueKind != JsonValueKind.Undefined)
         {
             if (!resetNsu) return MapSyncState(existing);
+            var existingState = MapSyncState(existing);
+            if (existingState.LastNsu != "000000000000000" || existingState.MaxNsu != "000000000000000")
+            {
+                return existingState;
+            }
 
             await PatchAsync(
                 $"nfe_dfe_sync_states?id=eq.{Uri.EscapeDataString(Get(existing, "id"))}",
@@ -81,15 +86,26 @@ public sealed class SupabaseDfeRepository(IHttpClientFactory httpClientFactory)
 
     public async Task AcquireLockAsync(DfeSyncState state, string lockToken, CancellationToken cancellationToken)
     {
-        if (state.Status == "running" && state.LockedAt is not null && state.LockedAt > DateTimeOffset.UtcNow.AddMinutes(-10))
+        var now = DateTimeOffset.UtcNow;
+        if (state.Status == "running" && state.LockedAt is not null && state.LockedAt > now.Subtract(DfeSyncPolicy.RunningLockTtl))
         {
-            throw new InvalidOperationException("Ja existe uma sincronizacao DF-e em andamento para este cliente.");
+            throw new DfeSyncAlreadyRunningException();
         }
 
-        if (state.NextAllowedSyncAt is not null && state.NextAllowedSyncAt > DateTimeOffset.UtcNow)
+        if (state.NextAllowedSyncAt is not null && state.NextAllowedSyncAt > now)
         {
-            throw new InvalidOperationException(
-                $"A SEFAZ bloqueou novas consultas temporariamente. Tente apos {state.NextAllowedSyncAt:dd/MM/yyyy HH:mm}.");
+            throw new DfeSyncCooldownException(
+                state.NextAllowedSyncAt.Value,
+                state.LastStatusCode,
+                $"Consulta temporariamente bloqueada. Tente apos {state.NextAllowedSyncAt:dd/MM/yyyy HH:mm}.");
+        }
+
+        var activeLock = await GetSingleAsync(
+            $"nfe_dfe_sync_states?select=*&cnpj=eq.{Uri.EscapeDataString(state.Cnpj)}&environment=eq.{Uri.EscapeDataString(state.Environment)}&status=eq.running&locked_at=gte.{Uri.EscapeDataString(now.Subtract(DfeSyncPolicy.RunningLockTtl).ToString("O"))}",
+            cancellationToken);
+        if (activeLock.ValueKind != JsonValueKind.Undefined && Get(activeLock, "id") != state.Id)
+        {
+            throw new DfeSyncAlreadyRunningException();
         }
 
         await PatchAsync(
@@ -139,6 +155,9 @@ public sealed class SupabaseDfeRepository(IHttpClientFactory httpClientFactory)
         var inserted = 0;
         var updated = 0;
         var ignored = 0;
+        var ignoredExisting = 0;
+        var completedExisting = 0;
+        var storageUploads = 0;
         var saved = new List<DfeDocument>();
 
         foreach (var processed in documents)
@@ -150,23 +169,45 @@ public sealed class SupabaseDfeRepository(IHttpClientFactory httpClientFactory)
                 continue;
             }
 
-            if (!string.IsNullOrWhiteSpace(processed.Xml))
-            {
-                await UploadPrivateXmlAsync(processed.Document.XmlStoragePath, processed.Xml, cancellationToken);
-            }
-
             var existing = await FindExistingDocumentAsync(processed.Document, cancellationToken);
             var body = DocumentBody(processed.Document);
             DfeDocument document;
 
             if (existing.ValueKind == JsonValueKind.Undefined)
             {
+                if (!string.IsNullOrWhiteSpace(processed.Xml))
+                {
+                    await UploadPrivateXmlAsync(processed.Document.XmlStoragePath, processed.Xml, cancellationToken);
+                    storageUploads += 1;
+                }
+
                 var response = await PostAsync("nfe_dfe_documents", body, cancellationToken);
                 document = MapDocument(response[0]);
                 inserted += 1;
             }
             else
             {
+                var existingDocument = MapDocument(existing);
+                if (DfeSyncPolicy.ExistingXmlIsComplete(existingDocument, processed.Document))
+                {
+                    ignored += 1;
+                    ignoredExisting += 1;
+                    saved.Add(existingDocument);
+
+                    if (processed.Event is not null)
+                    {
+                        await SaveEventAsync(processed.Event with { DocumentId = existingDocument.Id }, cancellationToken);
+                    }
+
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(processed.Xml))
+                {
+                    await UploadPrivateXmlAsync(processed.Document.XmlStoragePath, processed.Xml, cancellationToken);
+                    storageUploads += 1;
+                }
+
                 await PatchAsync(
                     $"nfe_dfe_documents?id=eq.{Uri.EscapeDataString(Get(existing, "id"))}",
                     body,
@@ -175,6 +216,11 @@ public sealed class SupabaseDfeRepository(IHttpClientFactory httpClientFactory)
                     $"nfe_dfe_documents?id=eq.{Uri.EscapeDataString(Get(existing, "id"))}",
                     cancellationToken);
                 document = MapDocument(refreshed);
+                if (!existingDocument.HasFullXml && document.HasFullXml)
+                {
+                    completedExisting += 1;
+                }
+
                 updated += 1;
             }
 
@@ -188,9 +234,12 @@ public sealed class SupabaseDfeRepository(IHttpClientFactory httpClientFactory)
 
         return new DfePersistResult
         {
+            CompletedExisting = completedExisting,
             Documents = saved,
             Ignored = ignored,
+            IgnoredExisting = ignoredExisting,
             Inserted = inserted,
+            StorageUploads = storageUploads,
             Updated = updated
         };
     }
@@ -403,9 +452,19 @@ public sealed class SupabaseDfeRepository(IHttpClientFactory httpClientFactory)
             if (byKey.ValueKind != JsonValueKind.Undefined) return byKey;
         }
 
-        return await GetSingleAsync(
+        var byNsu = await GetSingleAsync(
             $"nfe_dfe_documents?select=*&organization_id=eq.{Uri.EscapeDataString(document.OrganizationId)}&client_id=eq.{Uri.EscapeDataString(document.ClientId)}&certificate_id=eq.{Uri.EscapeDataString(document.CertificateId)}&nsu=eq.{Uri.EscapeDataString(document.Nsu)}&schema_name=eq.{Uri.EscapeDataString(document.SchemaName)}",
             cancellationToken);
+        if (byNsu.ValueKind != JsonValueKind.Undefined) return byNsu;
+
+        if (!string.IsNullOrWhiteSpace(document.XmlHash))
+        {
+            return await GetSingleAsync(
+                $"nfe_dfe_documents?select=*&organization_id=eq.{Uri.EscapeDataString(document.OrganizationId)}&client_id=eq.{Uri.EscapeDataString(document.ClientId)}&xml_hash=eq.{Uri.EscapeDataString(document.XmlHash)}",
+                cancellationToken);
+        }
+
+        return default;
     }
 
     private static object DocumentBody(DfeDocumentWrite document) => new

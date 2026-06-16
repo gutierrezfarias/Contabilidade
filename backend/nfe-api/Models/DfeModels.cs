@@ -8,7 +8,9 @@ public sealed record DfeSyncRequest
     public string ClientId { get; init; } = "";
     public string CertificateId { get; init; } = "";
     public int MaxCycles { get; init; } = 3;
+    public string QueryType { get; init; } = "summary";
     public bool ResetNsu { get; init; }
+    public string SyncRunId { get; init; } = "";
 }
 
 public sealed record DfeQueryNsuRequest
@@ -145,25 +147,65 @@ public sealed record DfeProcessResult
 
 public sealed record DfePersistResult
 {
+    public int CompletedExisting { get; init; }
     public int Inserted { get; init; }
     public int Updated { get; init; }
     public int Ignored { get; init; }
+    public int IgnoredExisting { get; init; }
+    public int StorageUploads { get; init; }
     public List<DfeDocument> Documents { get; init; } = [];
 }
 
 public sealed record DfeOperationResult
 {
+    public string Code { get; init; } = "";
     public bool Success { get; init; }
     public string Message { get; init; } = "";
     public string StatusCode { get; init; } = "";
     public string StatusMessage { get; init; } = "";
     public string LastNsu { get; init; } = "";
     public string MaxNsu { get; init; } = "";
+    public DateTimeOffset? NextAllowedSyncAt { get; init; }
+    public string SyncRunId { get; init; } = "";
     public int ReceivedCount { get; init; }
     public int InsertedCount { get; init; }
     public int UpdatedCount { get; init; }
     public int IgnoredCount { get; init; }
+    public int IgnoredExistingCount { get; init; }
+    public int CompletedExistingCount { get; init; }
+    public int SefazRequestCount { get; init; }
+    public int DatabaseReadCount { get; init; }
+    public int DatabaseWriteCount { get; init; }
+    public int StorageUploadCount { get; init; }
     public List<DfeDocument> Documents { get; init; } = [];
+}
+
+public sealed class DfeSyncCooldownException : InvalidOperationException
+{
+    public DfeSyncCooldownException(DateTimeOffset nextAllowedSyncAt, string statusCode = "", string message = "")
+        : base(string.IsNullOrWhiteSpace(message)
+            ? $"Consulta temporariamente bloqueada. Tente apos {nextAllowedSyncAt:dd/MM/yyyy HH:mm}."
+            : message)
+    {
+        NextAllowedSyncAt = nextAllowedSyncAt;
+        StatusCode = statusCode;
+    }
+
+    public string Code => "DFE_SYNC_COOLDOWN";
+    public DateTimeOffset NextAllowedSyncAt { get; }
+    public string RecommendedAction => "Aguarde o horario informado antes de consultar novamente.";
+    public string StatusCode { get; }
+}
+
+public sealed class DfeSyncAlreadyRunningException : InvalidOperationException
+{
+    public DfeSyncAlreadyRunningException()
+        : base("Ja existe uma sincronizacao DF-e em andamento para este CNPJ e ambiente.")
+    {
+    }
+
+    public string Code => "DFE_SYNC_ALREADY_RUNNING";
+    public string RecommendedAction => "Aguarde a sincronizacao em andamento finalizar.";
 }
 
 public sealed class DfeStorageUploadException : InvalidOperationException

@@ -96,6 +96,12 @@ function formatDate(value: string) {
   return day && month && year ? `${day}/${month}/${year}` : value
 }
 
+function formatDateTime(value: string) {
+  if (!value) return ''
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('pt-BR')
+}
+
 function shortKey(value: string) {
   if (!value) return 'Sem chave'
   return value.length > 44 ? `${value.slice(0, 22)}...${value.slice(-8)}` : value
@@ -152,9 +158,16 @@ export function Sefaz() {
   const [feedback, setFeedback] = useState('')
   const [error, setError] = useState('')
   const [syncStateError, setSyncStateError] = useState('')
+  const [clockNow, setClockNow] = useState(() => Date.now())
   const selectedCertificate = certificates.find((certificate) => certificate.id === certificateId) ?? null
   const selectedClient = clients.find((client) => client.id === clientId) ?? null
   const selectedUf = selectedCertificate?.stateUf || selectedClient?.state || ''
+  const nextAllowedSyncAt = syncState?.nextAllowedSyncAt ?? ''
+  const nextAllowedDate = nextAllowedSyncAt ? new Date(nextAllowedSyncAt) : null
+  const isSyncCooldown = Boolean(nextAllowedDate && nextAllowedDate.getTime() > clockNow)
+  const cooldownMessage = isSyncCooldown
+    ? `Nova consulta permitida apos ${formatDateTime(nextAllowedSyncAt)}.`
+    : ''
   const certificateReady = Boolean(
     selectedCertificate?.certificateFileData &&
       selectedCertificate?.certificatePassword &&
@@ -348,6 +361,13 @@ export function Sefaz() {
     return () => window.clearTimeout(timeoutId)
   }, [loadSyncState])
 
+  useEffect(() => {
+    if (!nextAllowedSyncAt) return
+
+    const intervalId = window.setInterval(() => setClockNow(Date.now()), 30_000)
+    return () => window.clearInterval(intervalId)
+  }, [nextAllowedSyncAt])
+
   function changeDocumentDirection(value: FiscalDocumentDirection) {
     setDocumentDirection(value)
     setFeedback(documentTabs.find((item) => item.id === value)?.description ?? '')
@@ -367,6 +387,11 @@ export function Sefaz() {
       setError(
         'A consulta DF-e da SEFAZ nao lista o historico de notas emitidas pela propria empresa. Para Emitidas, importe XMLs emitidos, consulte por chave de acesso ou use a emissao fiscal do sistema. Para buscar documentos via DF-e, use Recebidas, Transporte ou Citadas.',
       )
+      setFeedback('')
+      return
+    }
+    if (isSyncCooldown) {
+      setError(`Consulta temporariamente bloqueada. ${cooldownMessage}`)
       setFeedback('')
       return
     }
@@ -775,7 +800,12 @@ export function Sefaz() {
           </div>
 
           <div className="mt-5 flex flex-wrap gap-3">
-            <NfeDfeSearchPanel isLoading={isRefreshing} onConsult={(queryType) => void refreshDocuments(queryType)} />
+            <NfeDfeSearchPanel
+              cooldownMessage={cooldownMessage}
+              disabled={isSyncCooldown}
+              isLoading={isRefreshing}
+              onConsult={(queryType) => void refreshDocuments(queryType)}
+            />
             <ToolbarButton label="Colunas" onClick={() => setFeedback('Colunas padrao: DANFE, emissao, chave, empresa, valor e manifestacao.')} />
             <ToolbarButton label="Filtrar" onClick={() => void loadDocuments()} />
             <ToolbarButton label="Relatorios" onClick={() => setFeedback('Relatorios fiscais serao gerados com base nos documentos selecionados.')} />
@@ -783,7 +813,7 @@ export function Sefaz() {
             <ToolbarButton label="Envio e Download" onClick={downloadSelectedXmls} />
             <ToolbarButton label="Manifestar" onClick={prepareManifestation} />
             <ToolbarButton label="Validar dados" onClick={() => setTab('status')} />
-            <ToolbarButton label="Atualizar NSU" onClick={() => void refreshDocuments('summary')} />
+            <ToolbarButton disabled={isRefreshing || isSyncCooldown} label="Atualizar NSU" onClick={() => void refreshDocuments('summary')} />
             <ToolbarButton label="Ver SQL necessario" onClick={() => setFeedback('Arquivo gerado em supabase/sql/required-nfe-schema.sql. Rode no Supabase se aparecer alerta de campo/tabela faltando.')} />
             <ToolbarButton label="Ver logs SEFAZ" onClick={() => setTab('status')} />
           </div>
@@ -953,6 +983,7 @@ export function Sefaz() {
             <NfeStatusCard label="Ultimo xMotivo" ok={Boolean(syncState?.lastStatusMessage)} value={syncState?.lastStatusMessage || 'Nao informado'} />
             <NfeStatusCard label="Ultimo NSU" ok={Boolean(syncState?.lastNsu)} value={syncState?.lastNsu || '000000000000000'} />
             <NfeStatusCard label="Max NSU" ok={Boolean(syncState?.maxNsu)} value={syncState?.maxNsu || '000000000000000'} />
+            <NfeStatusCard label="Proxima consulta" ok={!isSyncCooldown} value={cooldownMessage || 'Liberada'} />
             <NfeStatusCard label="Webservice" ok value="NFeDistribuicaoDFe / NFeConsultaProtocolo4" />
             <NfeStatusCard label="Modo atual" ok value="Real via API interna" />
             <NfeStatusCard label="Notas encontradas" ok value={`${documents.length}`} />
@@ -980,10 +1011,11 @@ export function Sefaz() {
   )
 }
 
-function ToolbarButton({ label, onClick }: { label: string; onClick: () => void }) {
+function ToolbarButton({ disabled = false, label, onClick }: { disabled?: boolean; label: string; onClick: () => void }) {
   return (
     <button
-      className="rounded-xl bg-sky-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-sky-700"
+      className="rounded-xl bg-sky-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+      disabled={disabled}
       onClick={onClick}
       type="button"
     >

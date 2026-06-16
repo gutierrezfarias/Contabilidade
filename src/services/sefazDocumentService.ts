@@ -29,11 +29,13 @@ type SefazConsultationResponse = {
   lastNsu?: string
   maxNsu?: string
   message?: string
+  nextAllowedSyncAt?: string
   ok?: boolean
   receivedCount?: number
   status?: number
   statusCode?: string
   statusMessage?: string
+  syncRunId?: string
   success?: boolean
   updatedCount?: number
 }
@@ -79,6 +81,7 @@ export type SefazSyncState = {
   maxNsu: string
   lastStatusCode: string
   lastStatusMessage: string
+  nextAllowedSyncAt: string
   lastSuccessAt: string
   lastErrorAt: string
   lastErrorMessage: string
@@ -141,6 +144,7 @@ function mapSefazSyncState(row: Record<string, unknown>): SefazSyncState {
     lastStatusMessage: String(row.last_status_message ?? ''),
     lastSuccessAt: String(row.last_sync_at ?? ''),
     maxNsu: String(row.max_nsu ?? ''),
+    nextAllowedSyncAt: String(row.next_allowed_sync_at ?? ''),
     organizationId: String(row.organization_id ?? ''),
     stateUf: '',
     updatedAt: String(row.updated_at ?? ''),
@@ -349,6 +353,15 @@ function logSafeDfeCall(endpoint: string, httpStatus: number, statusCode?: strin
   })
 }
 
+function createSyncRunId() {
+  const browserCrypto = globalThis.crypto
+  if (browserCrypto?.randomUUID) {
+    return browserCrypto.randomUUID().replace(/-/g, '')
+  }
+
+  return `${Date.now()}${Math.random().toString(16).slice(2)}`.replace(/\W/g, '').slice(0, 32)
+}
+
 export async function consultDfeFromSefaz(input: {
   certificateId: string
   clientId: string
@@ -359,11 +372,13 @@ export async function consultDfeFromSefaz(input: {
 }): Promise<SefazConsultationResult> {
   const token = await getAccessToken()
   const endpoint = '/api/dfe/sync'
+  const syncRunId = createSyncRunId()
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${token}`,
       'content-type': 'application/json',
+      'x-sync-run-id': syncRunId,
     },
     body: JSON.stringify({
       certificateId: input.certificateId,
@@ -371,7 +386,9 @@ export async function consultDfeFromSefaz(input: {
       environment: input.environment ?? 'homologacao',
       maxCycles: input.queryType === 'complete' ? 8 : 1,
       organizationId: input.organizationId,
+      queryType: input.queryType ?? 'summary',
       resetNsu: false,
+      syncRunId,
     }),
   })
   const result = (await response.json().catch(() => ({}))) as Partial<SefazConsultationResponse> & Record<string, unknown>

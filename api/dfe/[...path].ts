@@ -58,6 +58,7 @@ export default async function handler(req: RoutedRequest, res: VercelResponse) {
     if (!authorization) {
       return res.status(401).json({ ok: false, error: 'Login obrigatorio para operar DF-e.' })
     }
+    const syncRunId = getHeader(req, 'x-sync-run-id')
 
     const path = pathFromQuery(req.query)
     const search = searchFromQuery(req.query)
@@ -66,6 +67,7 @@ export default async function handler(req: RoutedRequest, res: VercelResponse) {
       headers: {
         authorization,
         'content-type': 'application/json',
+        ...(syncRunId ? { 'x-sync-run-id': syncRunId } : {}),
       },
       body: method === 'GET' ? undefined : JSON.stringify(parseBody(req.body)),
     })

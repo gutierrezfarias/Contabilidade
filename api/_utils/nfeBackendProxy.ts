@@ -50,12 +50,14 @@ export async function proxyNfePost(req: VercelRequest, res: VercelResponse, path
     if (!authorization) {
       return res.status(401).json({ ok: false, error: 'Login obrigatorio para operar NF-e.' })
     }
+    const syncRunId = getHeader(req, 'x-sync-run-id')
 
     const response = await fetch(`${backendBaseUrl()}${path}`, {
       method: 'POST',
       headers: {
         authorization,
         'content-type': 'application/json',
+        ...(syncRunId ? { 'x-sync-run-id': syncRunId } : {}),
       },
       body: JSON.stringify(parseBody(req.body)),
     })
@@ -86,12 +88,14 @@ export async function proxyFiscalBackend(
     if (!authorization) {
       return res.status(401).json({ ok: false, error: 'Login obrigatorio para operar dados fiscais.' })
     }
+    const syncRunId = getHeader(req, 'x-sync-run-id')
 
     const response = await fetch(`${backendBaseUrl()}${path}`, {
       method,
       headers: {
         authorization,
         'content-type': 'application/json',
+        ...(syncRunId ? { 'x-sync-run-id': syncRunId } : {}),
       },
       body: method === 'GET' ? undefined : JSON.stringify(parseBody(req.body)),
     })
