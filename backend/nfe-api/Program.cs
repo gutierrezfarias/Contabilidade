@@ -46,6 +46,13 @@ builder.Services.AddScoped<SefazDfeDistributionService>();
 builder.Services.AddScoped<SupabaseDfeRepository>();
 builder.Services.AddScoped<SupabaseFiscalRepository>();
 builder.Services.AddScoped<SupabaseNfeRepository>();
+builder.Services.AddScoped<SupabaseAccountingRepository>();
+builder.Services.AddScoped<AccountingIntegrationService>();
+builder.Services.AddScoped<ManualImportProvider>();
+builder.Services.AddScoped<NetSpeedProvider>();
+builder.Services.AddScoped<IAccountingIntegrationProvider>(provider => provider.GetRequiredService<ManualImportProvider>());
+builder.Services.AddScoped<IAccountingIntegrationProvider>(provider => provider.GetRequiredService<NetSpeedProvider>());
+builder.Services.AddScoped<AccountingProviderRegistry>();
 
 var app = builder.Build();
 
@@ -717,6 +724,453 @@ app.MapPost("/api/reference-data/ncm/sync", async (
 
         var result = await ncmService.SyncAsync(userId, cancellationToken);
         return result.Success ? Results.Ok(result) : Results.BadRequest(result);
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapGet("/api/accounting-integrations", async (
+    string organizationId,
+    HttpContext httpContext,
+    AccountingIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var integrations = await service.ListIntegrationsAsync(
+            organizationId,
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return Results.Ok(new { ok = true, integrations });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapPost("/api/accounting-integrations", async (
+    AccountingIntegrationInput input,
+    HttpContext httpContext,
+    AccountingIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var integration = await service.CreateIntegrationAsync(
+            input,
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return Results.Ok(new { ok = true, integration });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapGet("/api/accounting-integrations/{id}", async (
+    string id,
+    string organizationId,
+    HttpContext httpContext,
+    AccountingIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var integration = await service.GetIntegrationAsync(
+            organizationId,
+            id,
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return Results.Ok(new { ok = true, integration });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapPut("/api/accounting-integrations/{id}", async (
+    string id,
+    string organizationId,
+    AccountingIntegrationInput input,
+    HttpContext httpContext,
+    AccountingIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var integration = await service.UpdateIntegrationAsync(
+            organizationId,
+            id,
+            input,
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return Results.Ok(new { ok = true, integration });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapDelete("/api/accounting-integrations/{id}", async (
+    string id,
+    string organizationId,
+    HttpContext httpContext,
+    AccountingIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        await service.DeleteIntegrationAsync(
+            organizationId,
+            id,
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return Results.Ok(new { ok = true });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapPost("/api/accounting-integrations/{id}/test", async (
+    string id,
+    string organizationId,
+    HttpContext httpContext,
+    AccountingIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var result = await service.TestConnectionAsync(
+            organizationId,
+            id,
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return result.Ok ? Results.Ok(result) : Results.BadRequest(result);
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapPost("/api/accounting-integrations/{id}/sync", async (
+    string id,
+    AccountingProviderSyncRequest input,
+    HttpContext httpContext,
+    AccountingIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var result = await service.SyncAsync(
+            input with { IntegrationId = id },
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return result.Ok ? Results.Ok(result) : Results.BadRequest(result);
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapGet("/api/accounting-integrations/{id}/sync-runs", async (
+    string id,
+    string organizationId,
+    HttpContext httpContext,
+    AccountingIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var syncRuns = await service.ListSyncRunsAsync(
+            organizationId,
+            id,
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return Results.Ok(new { ok = true, syncRuns });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapGet("/api/accounting-integrations/{id}/clients", async (
+    string id,
+    string organizationId,
+    HttpContext httpContext,
+    AccountingIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var clients = await service.ListLinkedClientsAsync(
+            organizationId,
+            id,
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return Results.Ok(new { ok = true, clients });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapPost("/api/accounting-integrations/{id}/clients/link", async (
+    string id,
+    AccountingIntegrationClientInput input,
+    HttpContext httpContext,
+    AccountingIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var client = await service.LinkClientAsync(
+            id,
+            input,
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return Results.Ok(new { ok = true, client });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapDelete("/api/accounting-integrations/{id}/clients/{linkId}", async (
+    string id,
+    string linkId,
+    string organizationId,
+    HttpContext httpContext,
+    AccountingIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        await service.UnlinkClientAsync(
+            organizationId,
+            id,
+            linkId,
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return Results.Ok(new { ok = true });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapPost("/api/accounting-imports/preview", async (
+    AccountingImportPreviewRequest input,
+    HttpContext httpContext,
+    AccountingIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var preview = await service.PreviewImportAsync(
+            input,
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return Results.Ok(preview);
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapPost("/api/accounting-imports/confirm", async (
+    AccountingImportConfirmRequest input,
+    HttpContext httpContext,
+    AccountingIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var result = await service.ConfirmImportAsync(
+            input,
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return result.Ok ? Results.Ok(result) : Results.BadRequest(result);
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapGet("/api/accounting-imports/{batchId}/errors", async (
+    string batchId,
+    string organizationId,
+    HttpContext httpContext,
+    AccountingIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var errors = await service.ListImportErrorsAsync(
+            organizationId,
+            batchId,
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return Results.Ok(new { ok = true, errors });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapGet("/api/accounting/taxes", async (
+    string organizationId,
+    string? clientId,
+    string? competence,
+    string? status,
+    HttpContext httpContext,
+    AccountingIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var records = await service.ListTaxRecordsAsync(
+            organizationId,
+            clientId,
+            competence,
+            status,
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return Results.Ok(new { ok = true, records });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapGet("/api/accounting/obligations", async (
+    string organizationId,
+    string? clientId,
+    string? competence,
+    string? status,
+    HttpContext httpContext,
+    AccountingIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var records = await service.ListObligationsAsync(
+            organizationId,
+            clientId,
+            competence,
+            status,
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return Results.Ok(new { ok = true, records });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapGet("/api/accounting/{recordType}", async (
+    string recordType,
+    string organizationId,
+    string? clientId,
+    HttpContext httpContext,
+    AccountingIntegrationService service,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var records = await service.ListGenericRecordsAsync(
+            recordType,
+            organizationId,
+            clientId,
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+        return Results.Ok(new { ok = true, records });
     }
     catch (UnauthorizedAccessException)
     {

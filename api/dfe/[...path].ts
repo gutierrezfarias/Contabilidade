@@ -40,6 +40,22 @@ function pathFromQuery(query: RoutedRequest['query']) {
   return parts.map((part) => encodeURIComponent(part)).join('/')
 }
 
+function backendPathFromQuery(query: RoutedRequest['query']) {
+  const path = pathFromQuery(query)
+  if (
+    path === 'accounting-integrations'
+    || path.startsWith('accounting-integrations/')
+    || path === 'accounting-imports'
+    || path.startsWith('accounting-imports/')
+    || path === 'accounting'
+    || path.startsWith('accounting/')
+  ) {
+    return `/api/${path}`
+  }
+
+  return `/api/dfe/${path}`
+}
+
 function searchFromQuery(query: RoutedRequest['query']) {
   const search = new URLSearchParams()
   for (const [key, value] of Object.entries(query ?? {}) as Array<[string, string | string[] | undefined]>) {
@@ -60,9 +76,9 @@ export default async function handler(req: RoutedRequest, res: VercelResponse) {
     }
     const syncRunId = getHeader(req, 'x-sync-run-id')
 
-    const path = pathFromQuery(req.query)
+    const path = backendPathFromQuery(req.query)
     const search = searchFromQuery(req.query)
-    const response = await fetch(`${backendBaseUrl()}/api/dfe/${path}${search ? `?${search}` : ''}`, {
+    const response = await fetch(`${backendBaseUrl()}${path}${search ? `?${search}` : ''}`, {
       method,
       headers: {
         authorization,

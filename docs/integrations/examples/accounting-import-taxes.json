@@ -1,0 +1,22 @@
+[
+  {
+    "cnpj": "12.345.678/0001-90",
+    "competencia": "05/2026",
+    "tipo_imposto": "DAS",
+    "descricao": "Simples Nacional mensal",
+    "valor": "129.90",
+    "vencimento": "20/06/2026",
+    "status": "Pendente",
+    "external_id": "MANUAL-001"
+  },
+  {
+    "cnpj": "12.345.678/0001-90",
+    "competencia": "05/2026",
+    "tipo_imposto": "INSS",
+    "descricao": "Guia previdenciaria",
+    "valor": "430.50",
+    "vencimento": "20/06/2026",
+    "status": "Pendente",
+    "external_id": "MANUAL-002"
+  }
+]
