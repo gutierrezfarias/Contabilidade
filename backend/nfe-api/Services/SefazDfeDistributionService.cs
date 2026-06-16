@@ -45,6 +45,7 @@ public sealed class SefazDfeDistributionService(
         var updated = 0;
         var ignored = 0;
         var currentNsu = request.ResetNsu ? "000000000000000" : state.LastNsu;
+        var persistedNsu = currentNsu;
         var maxNsu = state.MaxNsu;
         var statusCode = "";
         var statusMessage = "";
@@ -74,16 +75,17 @@ public sealed class SefazDfeDistributionService(
                     context.Certificate.Id,
                     context.Cnpj,
                     "recebida");
-                var persisted = await dfeRepository.SaveProcessedDocumentsAsync(parsed.Documents, cancellationToken);
-
                 statusCode = parsed.StatusCode;
                 statusMessage = parsed.StatusMessage;
+                var persisted = await dfeRepository.SaveProcessedDocumentsAsync(parsed.Documents, cancellationToken);
+
                 currentNsu = parsed.LastNsu;
                 maxNsu = parsed.MaxNsu;
                 received += parsed.Documents.Count;
                 inserted += persisted.Inserted;
                 updated += persisted.Updated;
                 ignored += persisted.Ignored;
+                persistedNsu = currentNsu;
 
                 if (MustBackoff(statusCode))
                 {
@@ -128,12 +130,12 @@ public sealed class SefazDfeDistributionService(
                 "error",
                 statusCode,
                 statusMessage,
-                currentNsu,
+                persistedNsu,
                 maxNsu,
                 DateTimeOffset.UtcNow.AddMinutes(15),
                 state.ConsecutiveErrors + 1,
                 cancellationToken);
-            await SaveLogAsync(context, startedAt, stopwatch, state.LastNsu, currentNsu, maxNsu, received, inserted, updated, ignored, statusCode, statusMessage, Sanitize(error.Message), cancellationToken);
+            await SaveLogAsync(context, startedAt, stopwatch, state.LastNsu, persistedNsu, maxNsu, received, inserted, updated, ignored, statusCode, statusMessage, Sanitize(error.Message), cancellationToken);
             throw;
         }
     }

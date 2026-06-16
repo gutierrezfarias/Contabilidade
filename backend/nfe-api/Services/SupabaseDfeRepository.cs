@@ -383,13 +383,13 @@ public sealed class SupabaseDfeRepository(IHttpClientFactory httpClientFactory)
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _serviceKey);
         request.Headers.Add("apikey", _serviceKey);
         request.Headers.Add("x-upsert", "true");
-        request.Content = new StringContent(xml, Encoding.UTF8, "application/xml");
+        request.Content = new ByteArrayContent(Encoding.UTF8.GetBytes(xml));
+        request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/xml");
 
         using var response = await _http.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            var message = await response.Content.ReadAsStringAsync(cancellationToken);
-            throw new InvalidOperationException($"Supabase Storage recusou o XML privado: {(int)response.StatusCode}. {message}");
+            throw new DfeStorageUploadException((int)response.StatusCode, storagePath);
         }
     }
 

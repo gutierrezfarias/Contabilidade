@@ -165,3 +165,20 @@ public sealed record DfeOperationResult
     public int IgnoredCount { get; init; }
     public List<DfeDocument> Documents { get; init; } = [];
 }
+
+public sealed class DfeStorageUploadException : InvalidOperationException
+{
+    public DfeStorageUploadException(int storageStatusCode, string logicalPath)
+        : base($"Falha ao salvar XML privado no Storage. codigo=dfe_storage_upload_failed; etapa=storage_upload; status={storageStatusCode}; caminho={logicalPath}; acao=Verifique o MIME type permitido do bucket nfe-dfe-xml e tente sincronizar novamente.")
+    {
+        StorageStatusCode = storageStatusCode;
+        LogicalPath = logicalPath;
+    }
+
+    public string Code => "dfe_storage_upload_failed";
+    public string Step => "storage_upload";
+    public int StorageStatusCode { get; }
+    public string SafeMessage => "Supabase Storage recusou o XML privado.";
+    public string LogicalPath { get; }
+    public string RecommendedAction => "Verifique se o bucket privado nfe-dfe-xml aceita application/xml e tente sincronizar novamente.";
+}

@@ -313,6 +313,21 @@ app.MapPost("/api/dfe/sync", async (
     {
         return Results.Unauthorized();
     }
+    catch (DfeStorageUploadException error)
+    {
+        return Results.BadRequest(new
+        {
+            success = false,
+            ok = false,
+            code = error.Code,
+            step = error.Step,
+            storageStatus = error.StorageStatusCode,
+            error = error.SafeMessage,
+            message = error.SafeMessage,
+            logicalPath = error.LogicalPath,
+            recommendedAction = error.RecommendedAction
+        });
+    }
     catch (Exception error)
     {
         return Results.BadRequest(new { success = false, ok = false, error = error.Message });
@@ -491,6 +506,21 @@ app.MapPost("/api/dfe/query/nsu", async (
     {
         return Results.Unauthorized();
     }
+    catch (DfeStorageUploadException error)
+    {
+        return Results.BadRequest(new
+        {
+            success = false,
+            ok = false,
+            code = error.Code,
+            step = error.Step,
+            storageStatus = error.StorageStatusCode,
+            error = error.SafeMessage,
+            message = error.SafeMessage,
+            logicalPath = error.LogicalPath,
+            recommendedAction = error.RecommendedAction
+        });
+    }
     catch (Exception error)
     {
         return Results.BadRequest(new { success = false, ok = false, error = error.Message });
@@ -514,6 +544,21 @@ app.MapPost("/api/dfe/query/access-key", async (
     catch (UnauthorizedAccessException)
     {
         return Results.Unauthorized();
+    }
+    catch (DfeStorageUploadException error)
+    {
+        return Results.BadRequest(new
+        {
+            success = false,
+            ok = false,
+            code = error.Code,
+            step = error.Step,
+            storageStatus = error.StorageStatusCode,
+            error = error.SafeMessage,
+            message = error.SafeMessage,
+            logicalPath = error.LogicalPath,
+            recommendedAction = error.RecommendedAction
+        });
     }
     catch (Exception error)
     {
