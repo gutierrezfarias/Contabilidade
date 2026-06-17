@@ -41,6 +41,32 @@ function warning(
   }
 }
 
+function info(
+  entity: NfeValidationEntity,
+  field: string,
+  message: string,
+  suggestion?: string,
+): NfeValidationIssue {
+  return {
+    entity,
+    field,
+    message,
+    severity: 'info',
+    suggestion,
+  }
+}
+
+function normalizeNsu(value: string | undefined) {
+  const digits = onlyDigits(value)
+  return digits ? digits.padStart(15, '0').slice(-15) : '000000000000000'
+}
+
+function formatDateTime(value: string | undefined) {
+  if (!value) return ''
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('pt-BR')
+}
+
 function missingField(table: string, column: string, reason: string): NfeMissingField {
   return {
     column,
@@ -162,14 +188,51 @@ function addOperationChecks(input: NfeReadinessInput, errors: NfeValidationIssue
       )
     }
 
-    warnings.push(
-      warning(
-        'dfe',
-        'ultimo_nsu',
-        'Ultimo NSU nao encontrado. A primeira consulta sera iniciada do NSU zero.',
-        'Depois da primeira consulta, o sistema passa a controlar o NSU automaticamente.',
-      ),
-    )
+    const syncState = input.dfeSyncState
+    if (!syncState?.exists) {
+      warnings.push(
+        info(
+          'dfe',
+          'ultimo_nsu',
+          'Primeira sincronizacao DF-e ainda nao realizada para este cliente/certificado.',
+          'A primeira consulta sera iniciada do NSU zero e, depois disso, o sistema passa a controlar o NSU automaticamente.',
+        ),
+      )
+    } else {
+      const lastNsu = normalizeNsu(syncState.lastNsu)
+      const maxNsu = normalizeNsu(syncState.maxNsu)
+      const nextAllowed = syncState.nextAllowedSyncAt ? new Date(syncState.nextAllowedSyncAt) : null
+      const inCooldown = Boolean(nextAllowed && nextAllowed.getTime() > Date.now())
+
+      if (inCooldown) {
+        warnings.push(
+          warning(
+            'dfe',
+            'cooldown',
+            'Consulta DF-e temporariamente bloqueada pela regra de intervalo da SEFAZ.',
+            `Aguarde ate ${formatDateTime(syncState.nextAllowedSyncAt)} para consultar novamente. O ultimo NSU salvo foi preservado.`,
+          ),
+        )
+      } else if (lastNsu === '000000000000000' && maxNsu === '000000000000000') {
+        warnings.push(
+          info(
+            'dfe',
+            'ultimo_nsu',
+            'Controle NSU carregado, ainda sem documentos retornados.',
+            'Isso pode acontecer quando a empresa nao possui DF-e disponivel no Ambiente Nacional para o periodo/situacao consultada.',
+          ),
+        )
+      } else {
+        warnings.push(
+          info(
+            'dfe',
+            'ultimo_nsu',
+            `Controle NSU carregado: ultimo NSU ${lastNsu}, max NSU ${maxNsu}.`,
+            'Novas consultas continuam a partir do ultimo NSU salvo, sem reiniciar do zero.',
+          ),
+        )
+      }
+    }
   }
 
   if (input.tipoOperacao === 'emissao_nfe') {

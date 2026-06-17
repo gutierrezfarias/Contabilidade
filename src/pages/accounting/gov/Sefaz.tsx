@@ -115,6 +115,20 @@ function onlyDigits(value: string) {
   return value.replace(/\D/g, '')
 }
 
+function normalizeNsu(value: string | undefined) {
+  const digits = onlyDigits(value ?? '')
+  return digits ? digits.padStart(15, '0').slice(-15) : '000000000000000'
+}
+
+function isSummaryDocument(document: NfeDocument) {
+  const schemaName = String(document.schemaName ?? '').toLowerCase()
+  return !document.hasFullXml || schemaName.startsWith('res')
+}
+
+function isFullXmlDocument(document: NfeDocument) {
+  return Boolean(document.hasFullXml && (document.xmlUrl || document.rawXml || document.danfeUrl))
+}
+
 function inferDirectionFromAccessKey(accessKey: string, client?: AccountingClient | null): FiscalDocumentDirection {
   const emitterCnpj = accessKey.slice(6, 20)
   return emitterCnpj && emitterCnpj === onlyDigits(client?.cnpj ?? '') ? 'emitida' : 'citada'
@@ -161,12 +175,17 @@ export function Sefaz() {
   const [clockNow, setClockNow] = useState(() => Date.now())
   const selectedCertificate = certificates.find((certificate) => certificate.id === certificateId) ?? null
   const selectedClient = clients.find((client) => client.id === clientId) ?? null
+  const selectedCertificateEnvironment = selectedCertificate?.environment ?? ''
+  const selectedClientCnpj = selectedClient?.cnpj ?? ''
   const selectedUf = selectedCertificate?.stateUf || selectedClient?.state || ''
   const nextAllowedSyncAt = syncState?.nextAllowedSyncAt ?? ''
   const nextAllowedDate = nextAllowedSyncAt ? new Date(nextAllowedSyncAt) : null
   const isSyncCooldown = Boolean(nextAllowedDate && nextAllowedDate.getTime() > clockNow)
   const cooldownMessage = isSyncCooldown
     ? `Nova consulta permitida apos ${formatDateTime(nextAllowedSyncAt)}.`
+    : ''
+  const cooldownReason = isSyncCooldown
+    ? 'A SEFAZ retornou bloqueio/intervalo minimo para Distribuicao DF-e. O sistema preservou o ultimo NSU e bloqueou novas tentativas ate o horario permitido.'
     : ''
   const certificateReady = Boolean(
     selectedCertificate?.certificateFileData &&
@@ -185,19 +204,41 @@ export function Sefaz() {
     () => documents.reduce((total, document) => total + document.amount, 0),
     [documents],
   )
+  const documentStats = useMemo(() => {
+    const summaryCount = documents.filter(isSummaryDocument).length
+    const fullXmlCount = documents.filter(isFullXmlDocument).length
+    const eventCount = documents.filter((document) => document.documentDirection === 'evento').length
+    const pendingManifestationCount = documents.filter((document) => document.manifestationStatus === 'Pendente').length
+
+    return {
+      eventCount,
+      fullXmlCount,
+      pendingManifestationCount,
+      summaryCount,
+    }
+  }, [documents])
   const dfeReadiness = useMemo(
     () =>
       validateSefazReadiness({
         ambiente: selectedCertificate?.environment,
         backendConfigured: true,
         certificado: selectedCertificate,
+        dfeSyncState: syncState
+          ? {
+              exists: true,
+              lastNsu: syncState.lastNsu,
+              lastStatusCode: syncState.lastStatusCode,
+              maxNsu: syncState.maxNsu,
+              nextAllowedSyncAt: syncState.nextAllowedSyncAt,
+            }
+          : { exists: false },
         empresa: selectedClient,
         enabledServices,
         senhaCertificado: selectedCertificate?.certificatePassword,
         tipoOperacao: 'distribuicao_dfe',
         uf: selectedUf,
       }),
-    [enabledServices, selectedCertificate, selectedClient, selectedUf],
+    [enabledServices, selectedCertificate, selectedClient, selectedUf, syncState],
   )
   const accessKeyReadiness = useMemo(
     () =>
@@ -341,6 +382,8 @@ export function Sefaz() {
       const loadedSyncState = await getLatestSefazSyncState({
         certificateId,
         clientId,
+        cnpj: selectedClientCnpj,
+        environment: selectedCertificateEnvironment,
         organizationId,
       })
       setSyncState(loadedSyncState)
@@ -349,7 +392,7 @@ export function Sefaz() {
       setSyncState(null)
       setSyncStateError(loadError instanceof Error ? loadError.message : 'Nao foi possivel carregar status SEFAZ.')
     }
-  }, [certificateId, clientId, organizationId])
+  }, [certificateId, clientId, organizationId, selectedCertificateEnvironment, selectedClientCnpj])
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => void loadDocuments(), 0)
@@ -391,7 +434,14 @@ export function Sefaz() {
       return
     }
     if (isSyncCooldown) {
-      setError(`Consulta temporariamente bloqueada. ${cooldownMessage}`)
+      setError(
+        [
+          'Consulta temporariamente bloqueada pela SEFAZ.',
+          cooldownMessage,
+          'O Cont Hub nao fez nova chamada real para evitar ampliar o bloqueio por consumo indevido.',
+          'Nao altere certificado ou senha por causa deste aviso; aguarde o horario liberado.',
+        ].filter(Boolean).join(' '),
+      )
       setFeedback('')
       return
     }
@@ -415,6 +465,9 @@ export function Sefaz() {
         queryType,
       })
       setLastConsultation(new Date().toLocaleString('pt-BR'))
+      if (result.nextAllowedSyncAt) {
+        setClockNow(Date.now())
+      }
       const sefazReturn = [
         result.statusCode ? `cStat: ${result.statusCode}` : '',
         result.statusMessage ? `xMotivo: ${result.statusMessage}` : '',
@@ -424,6 +477,8 @@ export function Sefaz() {
         `inseridos: ${result.insertedCount}`,
         `atualizados: ${result.updatedCount}`,
         result.ignoredCount ? `ignorados: ${result.ignoredCount}` : '',
+        result.nextAllowedSyncAt ? `proxima consulta: ${formatDateTime(result.nextAllowedSyncAt)}` : '',
+        result.syncRunId ? `sync: ${result.syncRunId}` : '',
       ].filter(Boolean).join(' | ')
       setFeedback(
         `${result.message}${sefazReturn ? ` ${sefazReturn}.` : ''}`,
@@ -524,6 +579,16 @@ export function Sefaz() {
   }
 
   async function downloadXml(document: NfeDocument) {
+    if (!document.xmlUrl && !document.rawXml) {
+      setError(
+        document.hasFullXml
+          ? 'XML completo ainda nao esta disponivel para esta nota.'
+          : 'Resumo XML ainda nao esta disponivel para este documento.',
+      )
+      setFeedback('')
+      return
+    }
+
     if (document.xmlUrl?.startsWith('/api/dfe/')) {
       try {
         const xml = await getDfeDocumentXml({
@@ -531,7 +596,8 @@ export function Sefaz() {
           documentId: document.id,
           organizationId: document.organizationId,
         })
-        downloadTextFile(`${document.accessKey || document.nsu || 'dfe'}.xml`, xml)
+        const suffix = document.hasFullXml ? 'xml-completo' : 'resumo-dfe'
+        downloadTextFile(`${document.accessKey || document.nsu || 'dfe'}-${suffix}.xml`, xml)
         return
       } catch (downloadError) {
         setError(downloadError instanceof Error ? downloadError.message : 'Nao foi possivel baixar o XML.')
@@ -545,13 +611,7 @@ export function Sefaz() {
       return
     }
 
-    if (!document.rawXml) {
-      setError('XML ainda nao esta disponivel para esta nota.')
-      setFeedback('')
-      return
-    }
-
-    downloadTextFile(`${document.accessKey || document.number || 'nfe'}.xml`, document.rawXml)
+    downloadTextFile(`${document.accessKey || document.number || 'nfe'}.xml`, document.rawXml ?? '')
   }
 
   function openDanfe(document: NfeDocument) {
@@ -560,8 +620,14 @@ export function Sefaz() {
       return
     }
 
+    if (!isFullXmlDocument(document)) {
+      setError('DANFE indisponivel: este registro e apenas um resumo DF-e. Para gerar DANFE, consulte por chave, manifeste quando necessario ou obtenha o XML completo autorizado.')
+      setFeedback('')
+      return
+    }
+
     if (!document.rawXml) {
-      setError('DANFE indisponivel: esta nota ainda nao possui XML completo salvo.')
+      setError('DANFE indisponivel: o XML completo esta salvo no backend/storage, mas ainda nao foi carregado no navegador para esta visualizacao.')
       setFeedback('')
       return
     }
@@ -782,6 +848,20 @@ export function Sefaz() {
           <div className="mb-5">
             <NfeValidationAlerts result={dfeReadiness} title="Pendencias para consulta DF-e/NSU" />
           </div>
+          <div className="mb-5 grid gap-3 md:grid-cols-4">
+            <NfeStatusCard label="Resumo DF-e" ok={documentStats.summaryCount > 0} value={`${documentStats.summaryCount}`} />
+            <NfeStatusCard label="XML completo" ok={documentStats.fullXmlCount > 0} value={`${documentStats.fullXmlCount}`} />
+            <NfeStatusCard label="Eventos" ok={documentStats.eventCount > 0} value={`${documentStats.eventCount}`} />
+            <NfeStatusCard label="Manifestacao pendente" ok={documentStats.pendingManifestationCount === 0} value={`${documentStats.pendingManifestationCount}`} />
+          </div>
+          <div className="mb-5 rounded-2xl border border-indigo-100 bg-indigo-50 p-4 text-sm text-indigo-800">
+            <p className="font-semibold">Como ler o resultado da Distribuicao DF-e</p>
+            <p className="mt-2">
+              A SEFAZ pode retornar somente um resumo da nota. Nesse caso o CONT HUB mostra o registro e permite baixar o resumo XML, mas DANFE e XML completo dependem do XML autorizado.
+              Para obter XML completo, use consulta por chave, manifeste a nota quando aplicavel ou aguarde o documento completo retornar no ciclo DF-e.
+            </p>
+            {cooldownMessage && <p className="mt-2 font-semibold">{cooldownMessage}</p>}
+          </div>
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             {documentTabs.map((item) => (
               <button
@@ -802,6 +882,7 @@ export function Sefaz() {
           <div className="mt-5 flex flex-wrap gap-3">
             <NfeDfeSearchPanel
               cooldownMessage={cooldownMessage}
+              disabledReason={cooldownReason}
               disabled={isSyncCooldown}
               isLoading={isRefreshing}
               onConsult={(queryType) => void refreshDocuments(queryType)}
@@ -813,7 +894,7 @@ export function Sefaz() {
             <ToolbarButton label="Envio e Download" onClick={downloadSelectedXmls} />
             <ToolbarButton label="Manifestar" onClick={prepareManifestation} />
             <ToolbarButton label="Validar dados" onClick={() => setTab('status')} />
-            <ToolbarButton disabled={isRefreshing || isSyncCooldown} label="Atualizar NSU" onClick={() => void refreshDocuments('summary')} />
+            <ToolbarButton label="Diagnosticar NSU" onClick={() => setTab('status')} />
             <ToolbarButton label="Ver SQL necessario" onClick={() => setFeedback('Arquivo gerado em supabase/sql/required-nfe-schema.sql. Rode no Supabase se aparecer alerta de campo/tabela faltando.')} />
             <ToolbarButton label="Ver logs SEFAZ" onClick={() => setTab('status')} />
           </div>
@@ -991,8 +1072,20 @@ export function Sefaz() {
           </div>
 
           <div className="mt-6 grid gap-4 lg:grid-cols-2">
-            <NfeNsuStatusCard state={syncState} />
+            <NfeNsuStatusCard documentsCount={documents.length} state={syncState} />
             <NfeChecklist result={dfeReadiness} />
+          </div>
+
+          <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
+            <p className="font-semibold text-slate-900">Diagnostico de sincronizacao</p>
+            <div className="mt-3 grid gap-3 md:grid-cols-3">
+              <InfoBlock label="Escopo" value={`${selectedClient?.cnpj || 'CNPJ nao informado'} / ${formatEnvironment(selectedCertificate?.environment)}`} />
+              <InfoBlock label="Sequencia NSU" value={`${normalizeNsu(syncState?.lastNsu)} de ${normalizeNsu(syncState?.maxNsu)}`} />
+              <InfoBlock label="Cooldown" value={cooldownMessage || 'Sem bloqueio local ativo'} />
+            </div>
+            <p className="mt-3">
+              Este diagnostico usa somente o estado salvo no Supabase. Ele nao chama a SEFAZ e nao reinicia NSU.
+            </p>
           </div>
 
           <div className="mt-6">
@@ -1036,6 +1129,15 @@ function Requirement({ description, status, title }: { description: string; stat
   )
 }
 
+function InfoBlock({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl bg-white p-4">
+      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</p>
+      <p className="mt-1 break-words font-semibold text-slate-800">{value}</p>
+    </div>
+  )
+}
+
 function SefazStatusLight({ status }: { status: SefazAvailability }) {
   const config = statusDescriptions[status]
 
@@ -1048,6 +1150,18 @@ function SefazStatusLight({ status }: { status: SefazAvailability }) {
       </span>
     </div>
   )
+}
+
+function DocumentXmlBadge({ document }: { document: NfeDocument }) {
+  if (isFullXmlDocument(document)) {
+    return <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">XML completo</span>
+  }
+
+  if (document.xmlUrl || document.rawXml) {
+    return <span className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">Resumo DF-e</span>
+  }
+
+  return <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">Sem XML</span>
 }
 
 function Select({ children, id, label, onChange, value }: { children: React.ReactNode; id: string; label: string; onChange: (value: string) => void; value: string }) {
@@ -1081,6 +1195,7 @@ function NfeGrid({
             <th className="pb-4">Ver DANFE</th>
             <th className="pb-4">Emissao</th>
             <th className="pb-4">Chave de acesso</th>
+            <th className="pb-4">Arquivo</th>
             <th className="pb-4">Empresa</th>
             <th className="pb-4">Valor</th>
             <th className="pb-4">Prazo manifestacao</th>
@@ -1098,11 +1213,11 @@ function NfeGrid({
                 />
               </td>
               <td className="py-4">
-                {document.danfeUrl ? (
+                {document.danfeUrl && isFullXmlDocument(document) ? (
                   <a className="rounded-lg bg-sky-600 px-3 py-2 text-xs font-semibold text-white" href={document.danfeUrl} rel="noreferrer" target="_blank">
                     Ver DANFE
                   </a>
-                ) : document.rawXml ? (
+                ) : document.rawXml && isFullXmlDocument(document) ? (
                   <button
                     className="rounded-lg bg-sky-600 px-3 py-2 text-xs font-semibold text-white"
                     onClick={() => onOpenDanfe(document)}
@@ -1111,14 +1226,20 @@ function NfeGrid({
                     Ver DANFE
                   </button>
                 ) : (
-                  <span className="rounded-lg bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-500">
-                    Indisponivel
+                  <span
+                    className="rounded-lg bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-500"
+                    title="DANFE exige XML completo autorizado. Resumo DF-e nao possui todos os dados fiscais para DANFE."
+                  >
+                    Sem DANFE
                   </span>
                 )}
               </td>
               <td className="py-4 text-slate-600">{formatDate(document.issueDate)}</td>
               <td className="py-4 font-mono text-xs text-slate-500" title={document.accessKey}>
                 {shortKey(document.accessKey)}
+              </td>
+              <td className="py-4">
+                <DocumentXmlBadge document={document} />
               </td>
               <td className="py-4 text-slate-700">
                 <span className="block font-semibold">{document.emitterName || document.recipientName || '-'}</span>
@@ -1139,11 +1260,13 @@ function NfeGrid({
               <td className="py-4">
                 <div className="flex flex-wrap gap-2">
                   <button
-                    className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:border-indigo-200 hover:text-indigo-700"
+                    className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:border-indigo-200 hover:text-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={!document.xmlUrl && !document.rawXml}
                     onClick={() => onDownloadXml(document)}
+                    title={document.hasFullXml ? 'Baixar XML completo autorizado.' : 'Baixar resumo XML recebido pela Distribuicao DF-e.'}
                     type="button"
                   >
-                    XML
+                    {document.hasFullXml ? 'XML completo' : 'Resumo XML'}
                   </button>
                   {document.danfeUrl && (
                     <a

@@ -164,7 +164,7 @@ export type NfeDocumentStatus =
   | 'Rejeitada'
   | 'Cancelada'
 
-export type FiscalDocumentDirection = 'recebida' | 'emitida' | 'transporte' | 'citada'
+export type FiscalDocumentDirection = 'recebida' | 'emitida' | 'transporte' | 'citada' | 'evento'
 
 export interface NfeDocument {
   id: string
@@ -197,4 +197,7 @@ export interface NfeDocument {
   lastConsultedAt: string
   xmlUrl?: string
   danfeUrl?: string
+  hasFullXml?: boolean
+  schemaName?: string
+  xmlStoragePath?: string
 }

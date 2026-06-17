@@ -43,6 +43,13 @@ export type NfeReadinessInput = {
   backendConfigured?: boolean
   chaveAcesso?: string
   certificado?: DigitalCertificate | null
+  dfeSyncState?: {
+    exists: boolean
+    lastNsu?: string
+    lastStatusCode?: string
+    maxNsu?: string
+    nextAllowedSyncAt?: string
+  }
   empresa?: AccountingClient | null
   enabledServices?: string[]
   senhaCertificado?: string
@@ -58,4 +65,3 @@ export type NfeReadinessResult = {
 }
 
 export type SefazMode = 'real_api_interna' | 'backend_externo' | 'simulado'
-

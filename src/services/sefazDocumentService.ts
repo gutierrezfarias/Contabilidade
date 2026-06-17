@@ -55,9 +55,11 @@ export type SefazConsultationResult = {
   lastNsu: string
   maxNsu: string
   message: string
+  nextAllowedSyncAt: string
   receivedCount: number
   statusCode: string
   statusMessage: string
+  syncRunId: string
   updatedCount: number
 }
 
@@ -97,14 +99,21 @@ function fail(error: { message: string } | null, fallback: string) {
   )
 }
 
+function onlyDigits(value: string | undefined) {
+  return String(value ?? '').replace(/\D/g, '')
+}
+
 function mapDfe(row: Record<string, unknown>): NfeDocument {
   const summary = (row.summary_data ?? {}) as Record<string, unknown>
+  const schemaName = String(row.schema_name ?? '')
+  const xmlStoragePath = String(row.xml_storage_path ?? '')
+  const hasFullXml = Boolean(row.has_full_xml)
   return {
     id: String(row.id),
     organizationId: String(row.organization_id),
     clientId: String(row.client_id),
     certificateId: String(row.certificate_id ?? ''),
-    documentModel: String(row.document_type ?? row.schema_name ?? 'NF-e'),
+    documentModel: String(row.document_type || schemaName || 'NF-e'),
     documentDirection: String(row.direction ?? 'recebida') as FiscalDocumentDirection,
     nsu: String(row.nsu ?? ''),
     accessKey: String(row.access_key ?? ''),
@@ -120,14 +129,17 @@ function mapDfe(row: Record<string, unknown>): NfeDocument {
     operationType: String(summary.natOp ?? 'Consulta DF-e'),
     recipientName: String(row.recipient_name ?? ''),
     recipientDocument: String(row.recipient_cnpj ?? ''),
-    description: String(row.document_type ?? row.schema_name ?? ''),
+    description: String(row.document_type || schemaName || ''),
+    hasFullXml,
     protocolNumber: String(summary.nProt ?? ''),
     manifestationStatus: String(row.manifestation_status ?? 'Pendente'),
     manifestationDeadline: '',
     rawSummary: summary,
+    schemaName,
     sefazStatusCode: String(summary.cStat ?? ''),
     lastConsultedAt: String(row.updated_at ?? ''),
-    xmlUrl: row.has_full_xml ? `/api/dfe/documents/${row.id}/xml` : undefined,
+    xmlStoragePath,
+    xmlUrl: xmlStoragePath ? `/api/dfe/documents/${row.id}/xml` : undefined,
   }
 }
 
@@ -230,19 +242,29 @@ export async function createNfeDraft(input: NfeInput) {
 export async function getLatestSefazSyncState(input: {
   certificateId?: string
   clientId?: string
+  cnpj?: string
+  environment?: string
   organizationId: string | null
 }) {
   if (!input.organizationId || !input.clientId || !input.certificateId) return null
 
-  const { data, error } = await supabase
+  let query = supabase
     .from('nfe_dfe_sync_states')
     .select('*')
     .eq('organization_id', input.organizationId)
     .eq('client_id', input.clientId)
     .eq('certificate_id', input.certificateId)
-    .order('updated_at', { ascending: false })
-    .limit(1)
-    .maybeSingle()
+
+  if (input.environment) {
+    query = query.eq('environment', input.environment)
+  }
+
+  const cnpj = onlyDigits(input.cnpj)
+  if (cnpj) {
+    query = query.eq('cnpj', cnpj)
+  }
+
+  const { data, error } = await query.order('updated_at', { ascending: false }).limit(1).maybeSingle()
 
   fail(error, 'Nao foi possivel carregar o controle de NSU.')
   return data ? mapSefazSyncState(data) : null
@@ -334,6 +356,24 @@ function buildSefazError(httpStatus: number, result: Record<string, unknown>) {
     readString(result, 'error', 'Error') ||
     'Nao foi possivel consultar NF-e/DF-e na SEFAZ.'
   const detail = readString(result, 'error', 'Error')
+  const nextAllowedSyncAt = readString(result, 'nextAllowedSyncAt', 'NextAllowedSyncAt')
+  const lastNsu = readString(result, 'lastNsu', 'LastNsu')
+  const maxNsu = readString(result, 'maxNsu', 'MaxNsu')
+  const syncRunId = readString(result, 'syncRunId', 'SyncRunId')
+
+  if (httpStatus === 429 || code === '656' || `${message} ${detail}`.toLowerCase().includes('consumo indevido')) {
+    return [
+      'Consulta temporariamente bloqueada pela SEFAZ.',
+      'Motivo: foram realizadas consultas antes do intervalo permitido ou fora da sequencia esperada de NSU.',
+      'O Cont Hub bloqueou novas tentativas para evitar ampliar o periodo de bloqueio.',
+      nextAllowedSyncAt ? `Nova consulta permitida apos ${new Date(nextAllowedSyncAt).toLocaleString('pt-BR')}.` : '',
+      'Nao e necessario alterar o certificado ou a senha.',
+      `Detalhes tecnicos: HTTP ${httpStatus}, cStat ${code}, xMotivo ${message}.`,
+      lastNsu ? `Ultimo NSU ${lastNsu}.` : '',
+      maxNsu ? `Max NSU ${maxNsu}.` : '',
+      syncRunId ? `Sync ${syncRunId}.` : '',
+    ].filter(Boolean).join(' ')
+  }
 
   return [
     `HTTP ${httpStatus}.`,
@@ -412,9 +452,11 @@ export async function consultDfeFromSefaz(input: {
     lastNsu: readString(result, 'lastNsu', 'LastNsu'),
     maxNsu: readString(result, 'maxNsu', 'MaxNsu'),
     message: readString(result, 'message', 'Message') || 'Consulta SEFAZ concluida.',
+    nextAllowedSyncAt: readString(result, 'nextAllowedSyncAt', 'NextAllowedSyncAt'),
     receivedCount,
     statusCode,
     statusMessage: readString(result, 'statusMessage', 'StatusMessage'),
+    syncRunId: readString(result, 'syncRunId', 'SyncRunId') || syncRunId,
     updatedCount,
   }
 }
@@ -466,11 +508,19 @@ export async function getDfeDocumentXml(input: {
       authorization: `Bearer ${token}`,
     },
   })
-  const result = (await response.json().catch(() => ({}))) as {
-    error?: string
-    ok?: boolean
-    xml?: string
+  const contentType = response.headers.get('content-type') ?? ''
+
+  if (response.ok && contentType.includes('xml')) {
+    return response.text()
   }
+
+  const result = contentType.includes('json')
+    ? ((await response.json().catch(() => ({}))) as {
+        error?: string
+        ok?: boolean
+        xml?: string
+      })
+    : { error: await response.text().catch(() => ''), ok: false, xml: '' }
 
   if (!response.ok || result.ok === false || !result.xml) {
     throw new Error(result.error ?? 'Nao foi possivel baixar o XML privado.')
