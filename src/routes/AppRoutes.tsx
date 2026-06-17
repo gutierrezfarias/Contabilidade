@@ -4,6 +4,7 @@ import { AdminApps } from '../pages/admin/AdminApps'
 import { AdminClients } from '../pages/admin/AdminClients'
 import { AdminDashboard } from '../pages/admin/AdminDashboard'
 import { AdminPlaceholder } from '../pages/admin/AdminPlaceholder'
+import { AdminSerpro } from '../pages/admin/AdminSerpro'
 import { AdminSettings } from '../pages/admin/AdminSettings'
 import { AppHome } from '../pages/apps/AppHome'
 import { PremiumApp } from '../pages/apps/PremiumApp'
@@ -14,6 +15,7 @@ import { Integrations } from '../pages/accounting/Integrations'
 import { Ecac } from '../pages/accounting/gov/Ecac'
 import { Sefaz } from '../pages/accounting/gov/Sefaz'
 import { AccountingSettings } from '../pages/accounting/settings/AccountingSettings'
+import { RevenueFederalSettings } from '../pages/accounting/settings/RevenueFederalSettings'
 import { ForgotPassword } from '../pages/auth/ForgotPassword'
 import { Login } from '../pages/auth/Login'
 import { ResetPassword } from '../pages/auth/ResetPassword'
@@ -95,6 +97,7 @@ export function AppRoutes() {
             />
             <Route element={<Sefaz />} path="/gov/sefaz" />
             <Route element={<Ecac />} path="/gov/ecac" />
+            <Route element={<RevenueFederalSettings />} path="/gov/receita-federal" />
             <Route element={<Integrations />} path="/integracoes" />
             <Route element={<AccountingSettings />} path="/configuracoes-contabeis" />
           </Route>
@@ -111,6 +114,10 @@ export function AppRoutes() {
             <Route
               element={<AdminPlaceholder description="Area gerencial para acompanhar assinaturas, cartao, Pix, inadimplencia e liberacao de acesso." title="Pagamentos" />}
               path="/admin/pagamentos"
+            />
+            <Route
+              element={<AdminSerpro />}
+              path="/admin/integracoes/serpro"
             />
             <Route
               element={<Navigate replace to="/admin/configuracoes?aba=pagina-inicial" />}

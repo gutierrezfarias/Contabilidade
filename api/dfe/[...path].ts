@@ -49,6 +49,12 @@ function backendPathFromQuery(query: RoutedRequest['query']) {
     || path.startsWith('accounting-imports/')
     || path === 'accounting'
     || path.startsWith('accounting/')
+    || path === 'admin/serpro'
+    || path.startsWith('admin/serpro/')
+    || path === 'serpro'
+    || path.startsWith('serpro/')
+    || path === 'revenue'
+    || path.startsWith('revenue/')
   ) {
     return `/api/${path}`
   }

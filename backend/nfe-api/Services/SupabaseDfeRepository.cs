@@ -170,24 +170,84 @@ public sealed class SupabaseDfeRepository(IHttpClientFactory httpClientFactory)
             }
 
             var existing = await FindExistingDocumentAsync(processed.Document, cancellationToken);
-            var body = DocumentBody(processed.Document);
             DfeDocument document;
 
-            if (existing.ValueKind == JsonValueKind.Undefined)
+            if (IsEventDocument(processed.Document))
             {
+                var existingDocument = existing.ValueKind == JsonValueKind.Undefined
+                    ? null
+                    : MapDocument(existing);
+
                 if (!string.IsNullOrWhiteSpace(processed.Xml))
                 {
                     await UploadPrivateXmlAsync(processed.Document.XmlStoragePath, processed.Xml, cancellationToken);
                     storageUploads += 1;
                 }
 
-                var response = await PostAsync("nfe_dfe_documents", body, cancellationToken);
-                document = MapDocument(response[0]);
+                if (processed.Event is not null)
+                {
+                    await SaveEventAsync(processed.Event with { DocumentId = existingDocument?.Id ?? "" }, cancellationToken);
+                }
+
+                ignored += 1;
+                if (existingDocument is not null)
+                {
+                    ignoredExisting += 1;
+                    saved.Add(existingDocument);
+                }
+
+                continue;
+            }
+
+            var body = DocumentBody(processed.Document);
+
+            if (existing.ValueKind == JsonValueKind.Undefined)
+            {
+                var uploadedPath = "";
+                if (!string.IsNullOrWhiteSpace(processed.Xml))
+                {
+                    await UploadPrivateXmlAsync(processed.Document.XmlStoragePath, processed.Xml, cancellationToken);
+                    storageUploads += 1;
+                    uploadedPath = processed.Document.XmlStoragePath;
+                }
+
+                try
+                {
+                    var response = await PostAsync("nfe_dfe_documents", body, cancellationToken);
+                    document = MapDocument(response[0]);
+                }
+                catch (InvalidOperationException error) when (IsDuplicateConflict(error))
+                {
+                    if (!string.IsNullOrWhiteSpace(uploadedPath))
+                    {
+                        await TryDeletePrivateXmlAsync(uploadedPath, cancellationToken);
+                    }
+
+                    throw new DfeDocumentPersistenceException(
+                        "document_insert",
+                        "DFE_DOCUMENT_PERSISTENCE_CONFLICT: documento ja existe para esta organizacao, cliente e chave de acesso.",
+                        processed.Document.AccessKey);
+                }
+
                 inserted += 1;
             }
             else
             {
                 var existingDocument = MapDocument(existing);
+                if (existingDocument.HasFullXml && !processed.Document.HasFullXml)
+                {
+                    ignored += 1;
+                    ignoredExisting += 1;
+                    saved.Add(existingDocument);
+
+                    if (processed.Event is not null)
+                    {
+                        await SaveEventAsync(processed.Event with { DocumentId = existingDocument.Id }, cancellationToken);
+                    }
+
+                    continue;
+                }
+
                 if (DfeSyncPolicy.ExistingXmlIsComplete(existingDocument, processed.Document))
                 {
                     ignored += 1;
@@ -202,16 +262,37 @@ public sealed class SupabaseDfeRepository(IHttpClientFactory httpClientFactory)
                     continue;
                 }
 
+                var uploadedPath = "";
                 if (!string.IsNullOrWhiteSpace(processed.Xml))
                 {
-                    await UploadPrivateXmlAsync(processed.Document.XmlStoragePath, processed.Xml, cancellationToken);
-                    storageUploads += 1;
+                    if (!ExistingStorageMatches(existingDocument, processed.Document))
+                    {
+                        await UploadPrivateXmlAsync(processed.Document.XmlStoragePath, processed.Xml, cancellationToken);
+                        storageUploads += 1;
+                        uploadedPath = processed.Document.XmlStoragePath;
+                    }
                 }
 
-                await PatchAsync(
-                    $"nfe_dfe_documents?id=eq.{Uri.EscapeDataString(Get(existing, "id"))}",
-                    body,
-                    cancellationToken);
+                try
+                {
+                    await PatchAsync(
+                        $"nfe_dfe_documents?id=eq.{Uri.EscapeDataString(Get(existing, "id"))}",
+                        body,
+                        cancellationToken);
+                }
+                catch (InvalidOperationException error) when (IsDuplicateConflict(error))
+                {
+                    if (!string.IsNullOrWhiteSpace(uploadedPath))
+                    {
+                        await TryDeletePrivateXmlAsync(uploadedPath, cancellationToken);
+                    }
+
+                    throw new DfeDocumentPersistenceException(
+                        "document_update",
+                        "DFE_DOCUMENT_PERSISTENCE_CONFLICT: nao foi possivel atualizar o resumo para XML completo.",
+                        processed.Document.AccessKey);
+                }
+
                 var refreshed = await GetSingleAsync(
                     $"nfe_dfe_documents?id=eq.{Uri.EscapeDataString(Get(existing, "id"))}",
                     cancellationToken);
@@ -442,12 +523,30 @@ public sealed class SupabaseDfeRepository(IHttpClientFactory httpClientFactory)
         }
     }
 
+    private async Task TryDeletePrivateXmlAsync(string storagePath, CancellationToken cancellationToken)
+    {
+        try
+        {
+            EnsureConfigured();
+            using var request = new HttpRequestMessage(
+                HttpMethod.Delete,
+                $"{_supabaseUrl}/storage/v1/object/{XmlBucket}/{Uri.EscapeDataString(storagePath).Replace("%2F", "/")}");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _serviceKey);
+            request.Headers.Add("apikey", _serviceKey);
+            await _http.SendAsync(request, cancellationToken);
+        }
+        catch
+        {
+            // Best-effort cleanup. The persistence error remains the authoritative failure.
+        }
+    }
+
     private async Task<JsonElement> FindExistingDocumentAsync(DfeDocumentWrite document, CancellationToken cancellationToken)
     {
         if (!string.IsNullOrWhiteSpace(document.AccessKey))
         {
             var byKey = await GetSingleAsync(
-                $"nfe_dfe_documents?select=*&organization_id=eq.{Uri.EscapeDataString(document.OrganizationId)}&client_id=eq.{Uri.EscapeDataString(document.ClientId)}&access_key=eq.{Uri.EscapeDataString(document.AccessKey)}&schema_name=eq.{Uri.EscapeDataString(document.SchemaName)}",
+                $"nfe_dfe_documents?select=*&organization_id=eq.{Uri.EscapeDataString(document.OrganizationId)}&client_id=eq.{Uri.EscapeDataString(document.ClientId)}&access_key=eq.{Uri.EscapeDataString(document.AccessKey)}&order=has_full_xml.desc,updated_at.desc",
                 cancellationToken);
             if (byKey.ValueKind != JsonValueKind.Undefined) return byKey;
         }
@@ -466,6 +565,24 @@ public sealed class SupabaseDfeRepository(IHttpClientFactory httpClientFactory)
 
         return default;
     }
+
+    private static bool ExistingStorageMatches(DfeDocument existing, DfeDocumentWrite incoming) =>
+        existing.HasFullXml
+        && !string.IsNullOrWhiteSpace(existing.XmlHash)
+        && existing.XmlHash == incoming.XmlHash
+        && !string.IsNullOrWhiteSpace(existing.XmlStoragePath);
+
+    private static bool IsDuplicateConflict(Exception error) =>
+        error.Message.Contains("duplicate key", StringComparison.OrdinalIgnoreCase)
+        || error.Message.Contains("23505", StringComparison.OrdinalIgnoreCase)
+        || error.Message.Contains("unique constraint", StringComparison.OrdinalIgnoreCase)
+        || error.Message.Contains("idx_nfe_dfe_documents_company_chave", StringComparison.OrdinalIgnoreCase)
+        || error.Message.Contains("nfe_dfe_documents_unique", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsEventDocument(DfeDocumentWrite document) =>
+        document.DocumentType.Equals("procEventoNFe", StringComparison.OrdinalIgnoreCase)
+        || document.SchemaName.Contains("procEvento", StringComparison.OrdinalIgnoreCase)
+        || document.Direction.Equals("evento", StringComparison.OrdinalIgnoreCase);
 
     private static object DocumentBody(DfeDocumentWrite document) => new
     {

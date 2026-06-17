@@ -224,3 +224,19 @@ public sealed class DfeStorageUploadException : InvalidOperationException
     public string LogicalPath { get; }
     public string RecommendedAction => "Verifique se o bucket privado nfe-dfe-xml aceita application/xml e tente sincronizar novamente.";
 }
+
+public sealed class DfeDocumentPersistenceException : InvalidOperationException
+{
+    public DfeDocumentPersistenceException(string step, string message, string? accessKey = null)
+        : base(message)
+    {
+        Step = step;
+        AccessKey = accessKey ?? "";
+    }
+
+    public string Code => "DFE_DOCUMENT_PERSISTENCE_CONFLICT";
+    public string Step { get; }
+    public string AccessKey { get; }
+    public string SafeMessage => "Conflito ao persistir documento DF-e. A sincronizacao foi preservada para reprocessar o NSU.";
+    public string RecommendedAction => "Execute novamente a consulta apos corrigir o indice/upsert. O NSU nao deve ser avancado em caso de falha.";
+}

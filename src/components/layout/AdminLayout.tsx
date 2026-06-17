@@ -68,6 +68,10 @@ export function AdminLayout({ children, title }: AdminLayoutProps) {
             <span aria-hidden="true">$</span>
             {!isCollapsed && 'Pagamentos'}
           </NavLink>
+          <NavLink className={adminNavClassName} to="/admin/integracoes/serpro">
+            <span aria-hidden="true">S</span>
+            {!isCollapsed && 'Serpro'}
+          </NavLink>
           <NavLink className={adminNavClassName} to="/admin/configuracoes">
             <span aria-hidden="true">~</span>
             {!isCollapsed && 'Configuracoes'}

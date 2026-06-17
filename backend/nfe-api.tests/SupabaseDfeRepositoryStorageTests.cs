@@ -115,6 +115,206 @@ public sealed class SupabaseDfeRepositoryStorageTests
         Assert.Equal(1, handler.Requests.Count(item => IsStorageUpload(item.Method, item.Uri)));
     }
 
+    [Fact]
+    public async Task SaveProcessedDocumentsAsync_updates_summary_to_full_xml_by_logical_access_key()
+    {
+        ConfigureSupabaseEnv();
+        var existing = "";
+        var handler = new RecordingHandler(request =>
+        {
+            if (IsStorageUpload(request))
+            {
+                return Task.FromResult(Empty(HttpStatusCode.OK));
+            }
+
+            if (request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath.Contains("/rest/v1/nfe_dfe_documents", StringComparison.Ordinal))
+            {
+                if (request.RequestUri.Query.Contains("id=eq.doc-summary", StringComparison.Ordinal))
+                {
+                    return Task.FromResult(Json($"[{DocumentJson(id: "doc-summary", hasFullXml: true, schemaName: "procNFe_v4.00.xsd", documentType: "procNFe")}]"));
+                }
+
+                return Task.FromResult(string.IsNullOrWhiteSpace(existing)
+                    ? Json("[]")
+                    : Json($"[{existing}]"));
+            }
+
+            if (request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath.Contains("/rest/v1/nfe_dfe_documents", StringComparison.Ordinal))
+            {
+                existing = DocumentJson(id: "doc-summary", hasFullXml: false, schemaName: "resNFe_v1.01.xsd", documentType: "resNFe", xmlHash: "summary-hash");
+                return Task.FromResult(Json($"[{existing}]"));
+            }
+
+            if (request.Method == HttpMethod.Patch && request.RequestUri!.AbsolutePath.Contains("/rest/v1/nfe_dfe_documents", StringComparison.Ordinal))
+            {
+                existing = DocumentJson(id: "doc-summary", hasFullXml: true, schemaName: "procNFe_v4.00.xsd", documentType: "procNFe");
+                return Task.FromResult(Empty(HttpStatusCode.NoContent));
+            }
+
+            return Task.FromResult(Empty(HttpStatusCode.NoContent));
+        });
+        var repository = Repository(handler);
+
+        var summary = ProcessedDocument("<resNFe>summary</resNFe>") with
+        {
+            Document = ProcessedDocument("<resNFe>summary</resNFe>").Document with
+            {
+                DocumentType = "resNFe",
+                HasFullXml = false,
+                SchemaName = "resNFe_v1.01.xsd",
+                XmlHash = "summary-hash",
+                XmlStoragePath = $"{OrganizationId}/{ClientId}/2026/06/resNFe-{AccessKey}-summary-hash.xml"
+            }
+        };
+
+        var first = await repository.SaveProcessedDocumentsAsync([summary], CancellationToken.None);
+        var second = await repository.SaveProcessedDocumentsAsync([ProcessedDocument("<procNFe>full</procNFe>")], CancellationToken.None);
+
+        Assert.Equal(1, first.Inserted);
+        Assert.Equal(1, second.Updated);
+        Assert.Equal(1, second.CompletedExisting);
+        Assert.Equal(1, handler.Requests.Count(item =>
+            item.Method == HttpMethod.Patch
+            && item.Uri.AbsolutePath.Contains("/rest/v1/nfe_dfe_documents", StringComparison.Ordinal)));
+        Assert.Contains(handler.Requests, item =>
+            item.Method == HttpMethod.Get
+            && item.Uri.Query.Contains($"access_key=eq.{AccessKey}", StringComparison.Ordinal)
+            && !item.Uri.Query.Contains("schema_name", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task SaveProcessedDocumentsAsync_does_not_downgrade_full_xml_to_summary()
+    {
+        ConfigureSupabaseEnv();
+        var handler = new RecordingHandler(request =>
+        {
+            if (request.Method == HttpMethod.Get
+                && request.RequestUri!.AbsolutePath.Contains("/rest/v1/nfe_dfe_documents", StringComparison.Ordinal))
+            {
+                return Task.FromResult(Json($"[{DocumentJson()}]"));
+            }
+
+            return Task.FromResult(Empty(HttpStatusCode.NoContent));
+        });
+        var repository = Repository(handler);
+        var summary = ProcessedDocument("<resNFe>summary</resNFe>") with
+        {
+            Document = ProcessedDocument("<resNFe>summary</resNFe>").Document with
+            {
+                DocumentType = "resNFe",
+                HasFullXml = false,
+                SchemaName = "resNFe_v1.01.xsd",
+                XmlHash = "summary-hash"
+            }
+        };
+
+        var result = await repository.SaveProcessedDocumentsAsync([summary], CancellationToken.None);
+
+        Assert.Equal(1, result.IgnoredExisting);
+        Assert.DoesNotContain(handler.Requests, item => IsStorageUpload(item.Method, item.Uri));
+        Assert.DoesNotContain(handler.Requests, item => item.Method == HttpMethod.Patch);
+    }
+
+    [Fact]
+    public async Task SaveProcessedDocumentsAsync_stores_proc_event_only_in_events_table()
+    {
+        ConfigureSupabaseEnv();
+        var handler = new RecordingHandler(request =>
+        {
+            if (IsStorageUpload(request))
+            {
+                return Task.FromResult(Empty(HttpStatusCode.OK));
+            }
+
+            if (request.Method == HttpMethod.Get
+                && request.RequestUri!.AbsolutePath.Contains("/rest/v1/nfe_dfe_documents", StringComparison.Ordinal))
+            {
+                return Task.FromResult(Json($"[{DocumentJson()}]"));
+            }
+
+            if (request.Method == HttpMethod.Get
+                && request.RequestUri!.AbsolutePath.Contains("/rest/v1/nfe_dfe_events", StringComparison.Ordinal))
+            {
+                return Task.FromResult(Json("[]"));
+            }
+
+            return Task.FromResult(Empty(HttpStatusCode.NoContent));
+        });
+        var repository = Repository(handler);
+        var evt = ProcessedDocument("<procEventoNFe>event</procEventoNFe>") with
+        {
+            Document = ProcessedDocument("<procEventoNFe>event</procEventoNFe>").Document with
+            {
+                Direction = "evento",
+                DocumentType = "procEventoNFe",
+                HasFullXml = true,
+                SchemaName = "procEventoNFe_v1.00.xsd",
+                XmlHash = "event-hash",
+                XmlStoragePath = $"{OrganizationId}/{ClientId}/2026/06/procEventoNFe-{AccessKey}-event-hash.xml"
+            },
+            Event = new DfeEventWrite
+            {
+                AccessKey = AccessKey,
+                ClientId = ClientId,
+                EventType = "210200",
+                OrganizationId = OrganizationId,
+                ResponseXmlHash = "event-hash",
+                Sequence = 1
+            }
+        };
+
+        await repository.SaveProcessedDocumentsAsync([evt], CancellationToken.None);
+
+        Assert.Contains(handler.Requests, item =>
+            item.Method == HttpMethod.Post
+            && item.Uri.AbsolutePath.Contains("/rest/v1/nfe_dfe_events", StringComparison.Ordinal));
+        Assert.DoesNotContain(handler.Requests, item =>
+            item.Method == HttpMethod.Patch
+            && item.Uri.AbsolutePath.Contains("/rest/v1/nfe_dfe_documents", StringComparison.Ordinal));
+        Assert.DoesNotContain(handler.Requests, item =>
+            item.Method == HttpMethod.Post
+            && item.Uri.AbsolutePath.Contains("/rest/v1/nfe_dfe_documents", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task SaveProcessedDocumentsAsync_duplicate_insert_throws_structured_conflict_and_cleans_storage()
+    {
+        ConfigureSupabaseEnv();
+        var handler = new RecordingHandler(request =>
+        {
+            if (IsStorageUpload(request))
+            {
+                return Task.FromResult(Empty(HttpStatusCode.OK));
+            }
+
+            if (request.Method == HttpMethod.Get)
+            {
+                return Task.FromResult(Json("[]"));
+            }
+
+            if (request.Method == HttpMethod.Post
+                && request.RequestUri!.AbsolutePath.Contains("/rest/v1/nfe_dfe_documents", StringComparison.Ordinal))
+            {
+                return Task.FromResult(Json(
+                    """{"code":"23505","message":"duplicate key value violates unique constraint \"idx_nfe_dfe_documents_company_chave\""}""",
+                    HttpStatusCode.Conflict));
+            }
+
+            return Task.FromResult(Empty(HttpStatusCode.NoContent));
+        });
+        var repository = Repository(handler);
+
+        var error = await Assert.ThrowsAsync<DfeDocumentPersistenceException>(() =>
+            repository.SaveProcessedDocumentsAsync([ProcessedDocument("<procNFe>full</procNFe>")], CancellationToken.None));
+
+        Assert.Equal("DFE_DOCUMENT_PERSISTENCE_CONFLICT", error.Code);
+        Assert.Equal("document_insert", error.Step);
+        Assert.Equal(AccessKey, error.AccessKey);
+        Assert.Contains(handler.Requests, item =>
+            item.Method == HttpMethod.Delete
+            && item.Uri.AbsolutePath.Contains("/storage/v1/object/nfe-dfe-xml/", StringComparison.Ordinal));
+    }
+
     private const string OrganizationId = "org-1";
     private const string ClientId = "client-1";
     private const string CertificateId = "cert-1";
@@ -144,17 +344,22 @@ public sealed class SupabaseDfeRepositoryStorageTests
         }
     };
 
-    private static string DocumentJson() =>
+    private static string DocumentJson(
+        string id = "doc-1",
+        bool hasFullXml = true,
+        string schemaName = "procNFe_v4.00.xsd",
+        string documentType = "procNFe",
+        string xmlHash = "abcdef1234567890") =>
         $$"""
         {
-          "id":"doc-1",
+          "id":"{{id}}",
           "organization_id":"{{OrganizationId}}",
           "client_id":"{{ClientId}}",
           "certificate_id":"{{CertificateId}}",
           "nsu":"000000000000123",
           "access_key":"{{AccessKey}}",
-          "schema_name":"procNFe_v4.00.xsd",
-          "document_type":"procNFe",
+          "schema_name":"{{schemaName}}",
+          "document_type":"{{documentType}}",
           "direction":"recebida",
           "issuer_cnpj":"11111111000191",
           "issuer_name":"EMPRESA EMITENTE LTDA",
@@ -163,9 +368,9 @@ public sealed class SupabaseDfeRepositoryStorageTests
           "total_value":0,
           "nfe_status":"",
           "manifestation_status":"Pendente",
-          "has_full_xml":true,
+          "has_full_xml":{{hasFullXml.ToString().ToLowerInvariant()}},
           "xml_storage_path":"{{StoragePath}}",
-          "xml_hash":"abcdef1234567890",
+          "xml_hash":"{{xmlHash}}",
           "summary_data":{}
         }
         """;

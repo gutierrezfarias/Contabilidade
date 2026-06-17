@@ -109,6 +109,10 @@ export function DashboardLayout({ children, title }: DashboardLayoutProps) {
                   <span aria-hidden="true">.</span>
                   {!isCollapsed && 'e-CAC'}
                 </NavLink>
+                <NavLink className={navigationClassName} title="Receita Federal" to={toWorkspace('/gov/receita-federal')}>
+                  <span aria-hidden="true">.</span>
+                  {!isCollapsed && 'Receita Federal'}
+                </NavLink>
               </div>
             )}
           </div>
