@@ -8,6 +8,7 @@ import { AdminSerpro } from '../pages/admin/AdminSerpro'
 import { AdminSettings } from '../pages/admin/AdminSettings'
 import { AppHome } from '../pages/apps/AppHome'
 import { PremiumApp } from '../pages/apps/PremiumApp'
+import { AccountingDocuments } from '../pages/accounting/AccountingDocuments'
 import { ClientManagement } from '../pages/accounting/ClientManagement'
 import { CnpjConsultation } from '../pages/accounting/CnpjConsultation'
 import { FiscalModule } from '../pages/accounting/FiscalModule'
@@ -24,6 +25,7 @@ import { Dashboard } from '../pages/dashboard/Dashboard'
 import { Home } from '../pages/home/Home'
 import { MiniCrm } from '../pages/miniCrm/MiniCrm'
 import { Omnichannel } from '../pages/omnichannel/Omnichannel'
+import { ClientPortal } from '../pages/portal/ClientPortal'
 import { Payments } from '../pages/settings/Payments'
 import { WebsiteBuilder } from '../pages/website/WebsiteBuilder'
 import { AdminRoute } from './AdminRoute'
@@ -90,6 +92,7 @@ export function AppRoutes() {
             <Route element={<AccountingDashboardRoute />} path="/dashboard" />
             <Route element={<ClientManagement key="cadastros" />} path="/gestao-clientes" />
             <Route element={<CnpjConsultation />} path="/consulta-cnpj" />
+            <Route element={<AccountingDocuments />} path="/documentos-contabeis" />
             <Route element={<FiscalModule />} path="/fiscal" />
             <Route
               element={<ClientManagement initialTab="pagamentos" key="pagamentos" />}
@@ -101,6 +104,7 @@ export function AppRoutes() {
             <Route element={<Integrations />} path="/integracoes" />
             <Route element={<AccountingSettings />} path="/configuracoes-contabeis" />
           </Route>
+          <Route element={<ClientPortal />} path="/portal" />
           <Route element={<AdminRoute />}>
             <Route element={<AdminDashboard />} path="/admin" />
             <Route

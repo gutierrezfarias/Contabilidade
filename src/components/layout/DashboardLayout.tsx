@@ -69,6 +69,10 @@ export function DashboardLayout({ children, title }: DashboardLayoutProps) {
             <span aria-hidden="true">C</span>
             {!isCollapsed && 'Consulta CNPJ'}
           </NavLink>
+          <NavLink className={navigationClassName} title="Documentos Contabeis" to={toWorkspace('/documentos-contabeis')}>
+            <span aria-hidden="true">D</span>
+            {!isCollapsed && 'Documentos Contabeis'}
+          </NavLink>
           <NavLink className={navigationClassName} title="Fiscal" to={toWorkspace('/fiscal')}>
             <span aria-hidden="true">F</span>
             {!isCollapsed && 'Fiscal'}

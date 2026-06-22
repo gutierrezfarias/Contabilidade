@@ -1,0 +1,97 @@
+{
+  "date": "2026-06-22",
+  "scope": "P2/P3 - Portal do Cliente e Documentos Contabeis",
+  "overallStatus": "CORRIGIDA, AGUARDANDO SUPABASE",
+  "items": [
+    {
+      "requirement": "Portal do Cliente",
+      "previousSituation": "Nao havia rota funcional dedicada para usuario externo do cliente com isolamento por client_id.",
+      "codeFound": "RLS existente era focada em membros da organizacao.",
+      "implementation": "Criada migration com client_portal_users, invites, access logs, funcoes claim/upsert/log e pagina /portal.",
+      "filesChanged": [
+        "supabase/migrations/20260622_client_portal_and_accounting_documents.sql",
+        "src/pages/portal/ClientPortal.tsx",
+        "src/services/accountingDocumentsService.ts",
+        "src/routes/AppRoutes.tsx"
+      ],
+      "migration": "supabase/migrations/20260622_client_portal_and_accounting_documents.sql",
+      "test": "ClientPortalAccountingDocumentsTests + npm lint/build",
+      "result": "Passou localmente; depende de rodar SQL no Supabase.",
+      "evidence": "dotnet test aprovado com 127 testes; npm lint/build aprovados.",
+      "externalPending": "Executar migration no Supabase e testar usuario externo real.",
+      "currentStatus": "CORRIGIDA, AGUARDANDO SUPABASE"
+    },
+    {
+      "requirement": "Documentos Contabeis",
+      "previousSituation": "Havia tabelas de documentos/importacoes, mas faltava tela operacional completa com upload, filtros, versionamento e portal.",
+      "codeFound": "accounting_documents existia na migration de integracoes.",
+      "implementation": "Criada tela /documentos-contabeis, servico Supabase/Storage, validacao de arquivo, download, substituicao, arquivamento e status de aprovacao.",
+      "filesChanged": [
+        "src/pages/accounting/AccountingDocuments.tsx",
+        "src/services/accountingDocumentsService.ts",
+        "src/types/accountingDocuments.ts",
+        "src/utils/accountingDocumentSecurity.ts",
+        "src/components/layout/DashboardLayout.tsx"
+      ],
+      "migration": "supabase/migrations/20260622_client_portal_and_accounting_documents.sql",
+      "test": "npm lint, npm build, ClientPortalAccountingDocumentsTests",
+      "result": "Passou localmente; Storage privado depende da migration.",
+      "evidence": "Frontend build gerado com sucesso; testes .NET aprovados.",
+      "externalPending": "Executar migration e validar upload/download no Supabase.",
+      "currentStatus": "CORRIGIDA, AGUARDANDO SUPABASE"
+    },
+    {
+      "requirement": "Obrigacoes e Impostos no Portal",
+      "previousSituation": "Dados existiam em accounting_tax_records e accounting_obligations, mas nao havia leitura no portal do cliente.",
+      "codeFound": "Tabelas da migration 20260616_accounting_integrations.sql.",
+      "implementation": "Portal lista impostos, obrigacoes e NF-es filtrados por organization_id/client_id.",
+      "filesChanged": [
+        "src/pages/portal/ClientPortal.tsx",
+        "src/services/accountingDocumentsService.ts",
+        "supabase/migrations/20260622_client_portal_and_accounting_documents.sql"
+      ],
+      "migration": "supabase/migrations/20260622_client_portal_and_accounting_documents.sql",
+      "test": "Teste estatico de RLS e build frontend.",
+      "result": "Leitura implementada; CRUD dedicado ainda nao foi implementado nesta fase.",
+      "evidence": "Politicas portal read own client criadas para tax, obligations e nfe.",
+      "externalPending": "Rodar SQL e testar registros reais.",
+      "currentStatus": "PARCIAL"
+    },
+    {
+      "requirement": "Integracoes / Manual e-CAC / Regularidade",
+      "previousSituation": "Ja existiam partes implementadas de integracoes e Receita Federal.",
+      "codeFound": "Nao alterado nesta entrega para evitar escopo excessivo.",
+      "implementation": "Nao implementado nesta fase; documentado como proxima etapa.",
+      "filesChanged": [],
+      "migration": "",
+      "test": "",
+      "result": "Fora da entrega executada agora.",
+      "evidence": "Relatorio P2/P3 lista pendencias.",
+      "externalPending": "Planejar proxima fase.",
+      "currentStatus": "NAO IMPLEMENTADA"
+    }
+  ],
+  "commands": [
+    {
+      "command": "npm.cmd run lint",
+      "result": "passed"
+    },
+    {
+      "command": "npm.cmd run build",
+      "result": "passed"
+    },
+    {
+      "command": "dotnet build backend\\nfe-api\\ContHub.NfeApi.csproj -c Release --no-restore",
+      "result": "passed"
+    },
+    {
+      "command": "dotnet test backend\\nfe-api.tests\\ContHub.NfeApi.Tests.csproj --no-restore",
+      "result": "passed",
+      "tests": 127
+    }
+  ],
+  "frontendTests": {
+    "configured": false,
+    "evidence": "package.json nao possui script test, vitest, jest ou playwright."
+  }
+}
