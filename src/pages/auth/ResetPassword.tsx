@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { AuthForm } from '../../components/forms/AuthForm'
@@ -7,6 +7,7 @@ import { Alert } from '../../components/ui/Alert'
 import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
 import { useAuth } from '../../hooks/useAuth'
+import { supabase } from '../../services/supabase'
 import { password } from '../../utils/validators'
 
 export function ResetPassword() {
@@ -15,8 +16,36 @@ export function ResetPassword() {
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isCheckingSession, setIsCheckingSession] = useState(true)
+  const [canSubmit, setCanSubmit] = useState(false)
   const { updatePassword } = useAuth()
   const navigate = useNavigate()
+
+  useEffect(() => {
+    let mounted = true
+
+    supabase.auth.getSession().then(({ data, error: sessionError }) => {
+      if (!mounted) return
+      if (sessionError) {
+        setError('Nao foi possivel validar o link de redefinicao.')
+      }
+      setCanSubmit(Boolean(data.session))
+      setIsCheckingSession(false)
+    })
+
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY' || session) {
+        setCanSubmit(true)
+        setError('')
+        setIsCheckingSession(false)
+      }
+    })
+
+    return () => {
+      mounted = false
+      listener.subscription.unsubscribe()
+    }
+  }, [])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -28,7 +57,12 @@ export function ResetPassword() {
     }
 
     if (newPassword !== confirmation) {
-      setError('As senhas não são iguais.')
+      setError('As senhas nao sao iguais.')
+      return
+    }
+
+    if (!canSubmit) {
+      setError('Link de redefinicao invalido ou expirado. Solicite uma nova redefinicao.')
       return
     }
 
@@ -38,12 +72,12 @@ export function ResetPassword() {
     try {
       const result = await updatePassword(newPassword)
       setMessage(result.message)
-      window.setTimeout(() => navigate('/aplicativos', { replace: true }), 1200)
+      window.setTimeout(() => navigate('/login', { replace: true }), 1200)
     } catch (serviceError) {
       setError(
         serviceError instanceof Error
           ? serviceError.message
-          : 'Não foi possível atualizar a senha.',
+          : 'Nao foi possivel atualizar a senha.',
       )
     } finally {
       setIsSubmitting(false)
@@ -58,6 +92,10 @@ export function ResetPassword() {
       <AuthForm onSubmit={handleSubmit}>
         {error && <Alert type="error">{error}</Alert>}
         {message && <Alert type="success">{message}</Alert>}
+        {isCheckingSession && <Alert type="success">Validando link de redefinicao...</Alert>}
+        {!isCheckingSession && !canSubmit && (
+          <Alert type="error">Link de redefinicao invalido ou expirado. Solicite um novo link.</Alert>
+        )}
         <Input
           autoComplete="new-password"
           id="new-password"
@@ -82,7 +120,7 @@ export function ResetPassword() {
           type="password"
           value={confirmation}
         />
-        <Button className="w-full" isLoading={isSubmitting} type="submit">
+        <Button className="w-full" disabled={!canSubmit || isCheckingSession} isLoading={isSubmitting} type="submit">
           Salvar nova senha
         </Button>
       </AuthForm>
