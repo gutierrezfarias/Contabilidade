@@ -5,6 +5,7 @@ import { Button } from '../../components/ui/Button'
 import { useAuth } from '../../hooks/useAuth'
 import {
   claimClientPortalAccess,
+  createAccountingDocumentSignedUrlById,
   createAccountingDocumentSignedUrl,
   listPortalDocuments,
   listPortalNfeDocuments,
@@ -141,6 +142,20 @@ export function ClientPortal() {
     }
   }
 
+  async function handleLinkedDocumentDownload(documentId: string, resourceType: string) {
+    if (!activeProfile || !documentId) return
+    setFeedback('')
+    setError('')
+    try {
+      const signedUrl = await createAccountingDocumentSignedUrlById(documentId)
+      if (signedUrl) window.open(signedUrl, '_blank', 'noopener,noreferrer')
+      await logClientPortalAccess(activeProfile, 'linked_document_downloaded', resourceType, documentId)
+      setFeedback('Download liberado com registro de acesso.')
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : 'Nao foi possivel baixar o documento vinculado.')
+    }
+  }
+
   return (
     <div className="min-h-screen bg-slate-50">
       <header className="flex flex-col gap-4 border-b border-slate-200 bg-white px-6 py-5 md:flex-row md:items-center md:justify-between">
@@ -235,6 +250,24 @@ export function ClientPortal() {
                         <span className={`mt-2 inline-flex rounded-full px-3 py-1 text-xs font-semibold ${statusClass(tax.status)}`}>{tax.status}</span>
                       </div>
                     </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <Button
+                        className="h-9 px-3 text-xs"
+                        disabled={!tax.guideDocumentId}
+                        onClick={() => void handleLinkedDocumentDownload(tax.guideDocumentId, 'accounting_tax_records')}
+                        variant="secondary"
+                      >
+                        Baixar guia
+                      </Button>
+                      <Button
+                        className="h-9 px-3 text-xs"
+                        disabled={!tax.receiptDocumentId}
+                        onClick={() => void handleLinkedDocumentDownload(tax.receiptDocumentId, 'accounting_tax_records')}
+                        variant="secondary"
+                      >
+                        Baixar comprovante
+                      </Button>
+                    </div>
                   </article>
                 ))}
               </div>
@@ -250,6 +283,24 @@ export function ClientPortal() {
                       Competencia {formatDate(obligation.competence)} | Vence {formatDate(obligation.dueDate)} | Protocolo {obligation.protocol || 'Nao informado'}
                     </p>
                     <span className={`mt-3 inline-flex rounded-full px-3 py-1 text-xs font-semibold ${statusClass(obligation.status)}`}>{obligation.status}</span>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <Button
+                        className="h-9 px-3 text-xs"
+                        disabled={!obligation.guideDocumentId}
+                        onClick={() => void handleLinkedDocumentDownload(obligation.guideDocumentId, 'accounting_obligations')}
+                        variant="secondary"
+                      >
+                        Baixar guia/documento
+                      </Button>
+                      <Button
+                        className="h-9 px-3 text-xs"
+                        disabled={!obligation.receiptDocumentId}
+                        onClick={() => void handleLinkedDocumentDownload(obligation.receiptDocumentId, 'accounting_obligations')}
+                        variant="secondary"
+                      >
+                        Baixar recibo
+                      </Button>
+                    </div>
                   </article>
                 ))}
               </div>

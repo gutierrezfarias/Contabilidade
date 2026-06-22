@@ -315,6 +315,29 @@ export async function createAccountingDocumentSignedUrl(document: AccountingDocu
   return data?.signedUrl ?? ''
 }
 
+export async function getAccountingDocumentById(documentId: string) {
+  if (!documentId) return null
+
+  const { data, error } = await supabase
+    .from('accounting_documents')
+    .select('*, clients(company_name)')
+    .eq('id', documentId)
+    .is('deleted_at', null)
+    .maybeSingle()
+
+  requireDataError(error, 'Nao foi possivel localizar o documento vinculado.')
+  return data ? mapAccountingDocument(data as Record<string, unknown>) : null
+}
+
+export async function createAccountingDocumentSignedUrlById(documentId: string) {
+  const document = await getAccountingDocumentById(documentId)
+  if (!document) {
+    throw new Error('Documento vinculado nao foi encontrado.')
+  }
+
+  return createAccountingDocumentSignedUrl(document)
+}
+
 export async function inviteClientPortalUser(organizationId: string, input: ClientPortalInviteInput) {
   const { data, error } = await supabase.rpc('upsert_client_portal_user', {
     p_client_id: input.clientId,
@@ -373,7 +396,7 @@ export async function listPortalDocuments(profile: ClientPortalUser) {
 export async function listPortalTaxes(profile: ClientPortalUser): Promise<PortalTaxRecord[]> {
   const { data, error } = await supabase
     .from('accounting_tax_records')
-    .select('id, tax_type, description, amount, competence, due_date, status')
+    .select('id, tax_type, description, amount, principal_amount, penalty_amount, interest_amount, total_amount, competence, due_date, paid_at, status, barcode, pix_code, guide_document_id, receipt_document_id')
     .eq('organization_id', profile.organizationId)
     .eq('client_id', profile.clientId)
     .is('deleted_at', null)
@@ -387,16 +410,25 @@ export async function listPortalTaxes(profile: ClientPortalUser): Promise<Portal
     taxType: stringValue(row.tax_type),
     description: stringValue(row.description),
     amount: numberValue(row.amount),
+    principalAmount: numberValue(row.principal_amount) || numberValue(row.amount),
+    penaltyAmount: numberValue(row.penalty_amount),
+    interestAmount: numberValue(row.interest_amount),
+    totalAmount: numberValue(row.total_amount) || numberValue(row.amount),
     competence: stringValue(row.competence),
     dueDate: stringValue(row.due_date),
+    paidAt: stringValue(row.paid_at),
     status: stringValue(row.status),
+    barcode: stringValue(row.barcode),
+    pixCode: stringValue(row.pix_code),
+    guideDocumentId: stringValue(row.guide_document_id),
+    receiptDocumentId: stringValue(row.receipt_document_id),
   }))
 }
 
 export async function listPortalObligations(profile: ClientPortalUser): Promise<PortalObligation[]> {
   const { data, error } = await supabase
     .from('accounting_obligations')
-    .select('id, obligation_type, competence, due_date, delivery_date, status, protocol')
+    .select('id, obligation_type, competence, period_start, period_end, due_date, delivery_date, status, protocol, notes, guide_document_id, receipt_document_id')
     .eq('organization_id', profile.organizationId)
     .eq('client_id', profile.clientId)
     .is('deleted_at', null)
@@ -409,10 +441,15 @@ export async function listPortalObligations(profile: ClientPortalUser): Promise<
     id: stringValue(row.id),
     obligationType: stringValue(row.obligation_type),
     competence: stringValue(row.competence),
+    periodStart: stringValue(row.period_start),
+    periodEnd: stringValue(row.period_end),
     dueDate: stringValue(row.due_date),
     deliveryDate: stringValue(row.delivery_date),
     status: stringValue(row.status),
     protocol: stringValue(row.protocol),
+    notes: stringValue(row.notes),
+    guideDocumentId: stringValue(row.guide_document_id),
+    receiptDocumentId: stringValue(row.receipt_document_id),
   }))
 }
 

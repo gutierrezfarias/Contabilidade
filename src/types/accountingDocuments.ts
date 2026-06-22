@@ -75,19 +75,33 @@ export interface PortalTaxRecord {
   taxType: string
   description: string
   amount: number
+  principalAmount: number
+  penaltyAmount: number
+  interestAmount: number
+  totalAmount: number
   competence: string
   dueDate: string
+  paidAt: string
   status: string
+  barcode: string
+  pixCode: string
+  guideDocumentId: string
+  receiptDocumentId: string
 }
 
 export interface PortalObligation {
   id: string
   obligationType: string
   competence: string
+  periodStart: string
+  periodEnd: string
   dueDate: string
   deliveryDate: string
   status: string
   protocol: string
+  notes: string
+  guideDocumentId: string
+  receiptDocumentId: string
 }
 
 export interface PortalNfeDocument {

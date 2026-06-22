@@ -13,6 +13,7 @@ import { ClientManagement } from '../pages/accounting/ClientManagement'
 import { CnpjConsultation } from '../pages/accounting/CnpjConsultation'
 import { FiscalModule } from '../pages/accounting/FiscalModule'
 import { Integrations } from '../pages/accounting/Integrations'
+import { ObligationsTaxes } from '../pages/accounting/ObligationsTaxes'
 import { Ecac } from '../pages/accounting/gov/Ecac'
 import { Sefaz } from '../pages/accounting/gov/Sefaz'
 import { AccountingSettings } from '../pages/accounting/settings/AccountingSettings'
@@ -93,6 +94,7 @@ export function AppRoutes() {
             <Route element={<ClientManagement key="cadastros" />} path="/gestao-clientes" />
             <Route element={<CnpjConsultation />} path="/consulta-cnpj" />
             <Route element={<AccountingDocuments />} path="/documentos-contabeis" />
+            <Route element={<ObligationsTaxes />} path="/obrigacoes-impostos" />
             <Route element={<FiscalModule />} path="/fiscal" />
             <Route
               element={<ClientManagement initialTab="pagamentos" key="pagamentos" />}

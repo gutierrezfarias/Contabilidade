@@ -73,6 +73,10 @@ export function DashboardLayout({ children, title }: DashboardLayoutProps) {
             <span aria-hidden="true">D</span>
             {!isCollapsed && 'Documentos Contabeis'}
           </NavLink>
+          <NavLink className={navigationClassName} title="Obrigacoes e Impostos" to={toWorkspace('/obrigacoes-impostos')}>
+            <span aria-hidden="true">O</span>
+            {!isCollapsed && 'Obrigacoes e Impostos'}
+          </NavLink>
           <NavLink className={navigationClassName} title="Fiscal" to={toWorkspace('/fiscal')}>
             <span aria-hidden="true">F</span>
             {!isCollapsed && 'Fiscal'}

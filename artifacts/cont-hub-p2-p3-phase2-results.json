@@ -1,0 +1,41 @@
+{
+  "date": "2026-06-22",
+  "phase": "P2/P3 Phase 2",
+  "summary": {
+    "obligationsAndTaxes": "CORRIGIDA, AGUARDANDO SUPABASE",
+    "clientPortalLinkedDownloads": "CORRIGIDA E TESTADA",
+    "alerts": "CORRIGIDA, AGUARDANDO SUPABASE",
+    "regularityAndHealth": "CORRIGIDA E TESTADA",
+    "integrations": "PARCIAL",
+    "manualEcacImport": "PARCIAL"
+  },
+  "migrationToRun": "supabase/migrations/20260622_obligations_taxes_alerts_regularidade.sql",
+  "filesChanged": [
+    "supabase/migrations/20260622_obligations_taxes_alerts_regularidade.sql",
+    "src/types/accountingCompliance.ts",
+    "src/services/accountingComplianceService.ts",
+    "src/pages/accounting/ObligationsTaxes.tsx",
+    "src/routes/AppRoutes.tsx",
+    "src/components/layout/DashboardLayout.tsx",
+    "src/types/accountingDocuments.ts",
+    "src/services/accountingDocumentsService.ts",
+    "src/pages/portal/ClientPortal.tsx",
+    "backend/nfe-api.tests/AccountingObligationsTaxesPhase2Tests.cs",
+    "reports/cont-hub-obligations-taxes-remediation-report.md",
+    "reports/cont-hub-obligations-taxes-manual-tests.md",
+    "reports/cont-hub-integrations-ecac-remediation-report.md",
+    "reports/cont-hub-regularity-health-report.md"
+  ],
+  "validations": {
+    "npmLint": "passed",
+    "npmBuild": "passed",
+    "dotnetBuildReleaseNoRestore": "passed",
+    "dotnetTestNoRestore": "passed",
+    "dotnetTestsTotal": 132
+  },
+  "externalPending": [
+    "Run Supabase migration 20260622_obligations_taxes_alerts_regularidade.sql",
+    "Manual RLS test with two organizations and portal users",
+    "Manual validation of integrations and manual e-CAC upload flows"
+  ]
+}
