@@ -9,6 +9,7 @@ import type {
   AccountingDocumentFilters,
   AccountingDocumentInput,
   AccountingDocumentPage,
+  ClientPortalAccessUpdateInput,
   ClientPortalInviteInput,
   ClientPortalUser,
   PortalNfeDocument,
@@ -20,9 +21,9 @@ function requireDataError(error: { message: string } | null, fallback: string) {
   if (error) {
     throw new Error(
       error.message.includes('schema cache') ||
-        error.message.includes('does not exist') ||
+      error.message.includes('does not exist') ||
         error.message.includes('Could not find')
-        ? 'Rode a migration 20260622_client_portal_and_accounting_documents.sql no Supabase.'
+        ? 'Rode as migrations 20260622_client_portal_and_accounting_documents.sql e 20260622_client_portal_access_management.sql no Supabase.'
         : fallback,
     )
   }
@@ -83,11 +84,31 @@ function mapPortalUser(row: Record<string, unknown>): ClientPortalUser {
     id: stringValue(row.id),
     organizationId: stringValue(row.organization_id),
     clientId: stringValue(row.client_id),
+    clientName: clientNameFromRow(row),
+    authUserId: stringValue(row.user_id),
     email: stringValue(row.email),
     fullName: stringValue(row.full_name),
     role: stringValue(row.role) as ClientPortalUser['role'],
     status: stringValue(row.status) as ClientPortalUser['status'],
+    recoveryRequestedAt: stringValue(row.recovery_requested_at),
+    lastAccessAt: stringValue(row.last_access_at),
+    disabledAt: stringValue(row.disabled_at),
+    disabledReason: stringValue(row.disabled_reason),
+    removedAt: stringValue(row.removed_at),
+    removalReason: stringValue(row.removal_reason),
+    createdAt: stringValue(row.created_at),
+    updatedAt: stringValue(row.updated_at),
   }
+}
+
+function translatePasswordResetError(error: { message: string } | null) {
+  if (!error) return ''
+  const message = error.message.toLowerCase()
+  if (message.includes('rate') || message.includes('too many') || message.includes('limit')) {
+    return 'Limite de envios atingido. Aguarde alguns minutos antes de tentar novamente.'
+  }
+
+  return 'Nao foi possivel enviar a redefinicao de senha pelo Supabase Auth.'
 }
 
 export async function listAccountingDocuments(
@@ -356,20 +377,64 @@ export async function listClientPortalUsers(organizationId: string, clientId: st
 
   const { data, error } = await supabase
     .from('client_portal_users')
-    .select('*')
+    .select('*, clients(company_name)')
     .eq('organization_id', organizationId)
     .eq('client_id', clientId)
-    .is('deleted_at', null)
     .order('created_at', { ascending: false })
 
   requireDataError(error, 'Nao foi possivel carregar usuarios do portal.')
   return ((data ?? []) as Record<string, unknown>[]).map((row) => mapPortalUser(row))
 }
 
-export async function sendClientPortalPasswordReset(email: string) {
+export async function updateClientPortalUserAccess(input: ClientPortalAccessUpdateInput) {
+  const { error } = await supabase.rpc('update_client_portal_user_access', {
+    p_client_id: input.clientId,
+    p_full_name: input.fullName,
+    p_portal_access_id: input.portalAccessId,
+    p_role: input.role,
+  })
+
+  requireDataError(error, 'Nao foi possivel editar o acesso do portal.')
+}
+
+export async function setClientPortalUserStatus(portalAccessId: string, status: 'active' | 'disabled', reason = '') {
+  const { error } = await supabase.rpc('set_client_portal_user_status', {
+    p_portal_access_id: portalAccessId,
+    p_reason: reason,
+    p_status: status,
+  })
+
+  requireDataError(error, 'Nao foi possivel alterar o status do acesso.')
+}
+
+export async function removeClientPortalUserLink(portalAccessId: string, reason = '') {
+  const { error } = await supabase.rpc('remove_client_portal_user_link', {
+    p_portal_access_id: portalAccessId,
+    p_reason: reason,
+  })
+
+  requireDataError(error, 'Nao foi possivel remover o vinculo do portal.')
+}
+
+export async function sendClientPortalPasswordReset(portalUser: ClientPortalUser) {
+  if (!portalUser.authUserId) {
+    throw new Error('Este acesso ainda nao possui usuario Auth vinculado. O cliente precisa criar/confirmar a conta antes da redefinicao.')
+  }
+
+  if (portalUser.status === 'disabled' || portalUser.status === 'removed') {
+    throw new Error('Nao e possivel enviar redefinicao para acesso desativado ou removido.')
+  }
+
   const redirectTo = `${window.location.origin}/redefinir-senha`
-  const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo })
-  requireDataError(error, 'Nao foi possivel enviar a redefinicao de senha.')
+  const { error } = await supabase.auth.resetPasswordForEmail(portalUser.email, { redirectTo })
+  if (error) {
+    throw new Error(translatePasswordResetError(error))
+  }
+
+  const { error: logError } = await supabase.rpc('record_client_portal_password_reset_request', {
+    p_portal_access_id: portalUser.id,
+  })
+  requireDataError(logError, 'Redefinicao enviada, mas nao foi possivel auditar a solicitacao.')
 }
 
 export async function claimClientPortalAccess() {

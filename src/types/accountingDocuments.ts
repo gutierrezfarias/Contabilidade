@@ -53,21 +53,41 @@ export interface AccountingDocumentPage {
   total: number
 }
 
+export type ClientPortalRole = 'viewer' | 'collaborator' | 'manager' | 'owner'
+export type ClientPortalStatus = 'invited' | 'active' | 'disabled' | 'removed'
+
 export interface ClientPortalUser {
   id: string
   organizationId: string
   clientId: string
+  clientName: string
+  authUserId: string
   email: string
   fullName: string
-  role: 'owner' | 'viewer'
-  status: 'invited' | 'active' | 'disabled'
+  role: ClientPortalRole
+  status: ClientPortalStatus
+  recoveryRequestedAt: string
+  lastAccessAt: string
+  disabledAt: string
+  disabledReason: string
+  removedAt: string
+  removalReason: string
+  createdAt: string
+  updatedAt: string
 }
 
 export interface ClientPortalInviteInput {
   clientId: string
   email: string
   fullName: string
-  role: 'owner' | 'viewer'
+  role: ClientPortalRole
+}
+
+export interface ClientPortalAccessUpdateInput {
+  portalAccessId: string
+  clientId: string
+  fullName: string
+  role: ClientPortalRole
 }
 
 export interface PortalTaxRecord {

@@ -11,9 +11,12 @@ import {
   inviteClientPortalUser,
   listAccountingDocuments,
   listClientPortalUsers,
+  removeClientPortalUserLink,
   replaceAccountingDocument,
   sendClientPortalPasswordReset,
+  setClientPortalUserStatus,
   updateAccountingDocumentApproval,
+  updateClientPortalUserAccess,
   uploadAccountingDocument,
 } from '../../services/accountingDocumentsService'
 import { resolveOrganizationId } from '../../services/platformService'
@@ -22,6 +25,7 @@ import type {
   AccountingDocument,
   AccountingDocumentApprovalStatus,
   AccountingDocumentInput,
+  ClientPortalRole,
   ClientPortalUser,
 } from '../../types/accountingDocuments'
 
@@ -48,6 +52,13 @@ const approvalStatuses: Array<{ label: string; value: AccountingDocumentApproval
   { label: 'Entregue', value: 'delivered' },
 ]
 
+const portalRoleOptions: Array<{ label: string; value: ClientPortalRole; description: string }> = [
+  { label: 'Visualizador', value: 'viewer', description: 'Pode acessar documentos e informacoes liberadas.' },
+  { label: 'Colaborador', value: 'collaborator', description: 'Pode acompanhar e apoiar demandas do cliente.' },
+  { label: 'Gerente do portal', value: 'manager', description: 'Pode operar rotinas do portal do cliente.' },
+  { label: 'Responsavel', value: 'owner', description: 'Perfil legado de responsavel principal.' },
+]
+
 const blankDocumentForm: AccountingDocumentInput = {
   approvalStatus: 'pending',
   category: 'Documento contabil',
@@ -62,7 +73,15 @@ const blankDocumentForm: AccountingDocumentInput = {
 type PortalFormState = {
   email: string
   fullName: string
-  role: 'owner' | 'viewer'
+  role: ClientPortalRole
+}
+
+type PortalConfirmAction = 'disable' | 'reactivate' | 'remove'
+
+type PortalConfirmState = {
+  action: PortalConfirmAction
+  reason: string
+  user: ClientPortalUser
 }
 
 function formatDate(value: string) {
@@ -89,8 +108,26 @@ function statusBadge(status: string) {
   return 'bg-amber-50 text-amber-700'
 }
 
+function portalStatusBadge(status: string) {
+  if (status === 'active') return 'bg-emerald-50 text-emerald-700'
+  if (status === 'disabled' || status === 'removed') return 'bg-rose-50 text-rose-700'
+  return 'bg-amber-50 text-amber-700'
+}
+
 function labelApprovalStatus(status: string) {
   return approvalStatuses.find((item) => item.value === status)?.label ?? status
+}
+
+function labelPortalRole(role: ClientPortalRole) {
+  return portalRoleOptions.find((item) => item.value === role)?.label ?? role
+}
+
+function labelPortalStatus(user: ClientPortalUser) {
+  if (user.status === 'removed') return 'Vinculo removido'
+  if (user.status === 'disabled') return 'Desativado'
+  if (user.status === 'invited') return 'Sem usuario Auth vinculado'
+  if (!user.authUserId) return 'Sem usuario Auth vinculado'
+  return 'Ativo'
 }
 
 export function AccountingDocuments() {
@@ -109,6 +146,14 @@ export function AccountingDocuments() {
   const [portalClientId, setPortalClientId] = useState('')
   const [portalUsers, setPortalUsers] = useState<ClientPortalUser[]>([])
   const [portalForm, setPortalForm] = useState<PortalFormState>({ email: '', fullName: '', role: 'viewer' })
+  const [editingPortalUser, setEditingPortalUser] = useState<ClientPortalUser | null>(null)
+  const [editPortalForm, setEditPortalForm] = useState<{ clientId: string; fullName: string; role: ClientPortalRole }>({
+    clientId: '',
+    fullName: '',
+    role: 'viewer',
+  })
+  const [portalConfirm, setPortalConfirm] = useState<PortalConfirmState | null>(null)
+  const [resettingPortalUserId, setResettingPortalUserId] = useState('')
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [feedback, setFeedback] = useState('')
@@ -319,17 +364,93 @@ export function AccountingDocuments() {
     }
   }
 
-  async function handlePasswordReset(email: string) {
+  function openPortalEdit(user: ClientPortalUser) {
+    setEditingPortalUser(user)
+    setEditPortalForm({
+      clientId: user.clientId,
+      fullName: user.fullName,
+      role: user.role,
+    })
+    setFeedback('')
+    setError('')
+  }
+
+  async function handleUpdatePortalAccess() {
+    if (!editingPortalUser) return
+    if (!editPortalForm.clientId) {
+      setError('Selecione o cliente vinculado ao acesso.')
+      return
+    }
+
     setSaving(true)
     setFeedback('')
     setError('')
     try {
-      await sendClientPortalPasswordReset(email)
+      await updateClientPortalUserAccess({
+        clientId: editPortalForm.clientId,
+        fullName: editPortalForm.fullName,
+        portalAccessId: editingPortalUser.id,
+        role: editPortalForm.role,
+      })
+      setFeedback('Acesso do portal atualizado com auditoria.')
+      setEditingPortalUser(null)
+      await loadPortalUsers()
+    } catch (updateError) {
+      setError(updateError instanceof Error ? updateError.message : 'Nao foi possivel editar o acesso.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function openPortalConfirm(user: ClientPortalUser, action: PortalConfirmAction) {
+    setPortalConfirm({ action, reason: '', user })
+    setFeedback('')
+    setError('')
+  }
+
+  async function handleConfirmPortalAction() {
+    if (!portalConfirm) return
+
+    setSaving(true)
+    setFeedback('')
+    setError('')
+    try {
+      if (portalConfirm.action === 'disable') {
+        await setClientPortalUserStatus(portalConfirm.user.id, 'disabled', portalConfirm.reason)
+        setFeedback('Acesso desativado. O usuario Auth foi preservado.')
+      }
+
+      if (portalConfirm.action === 'reactivate') {
+        await setClientPortalUserStatus(portalConfirm.user.id, 'active', portalConfirm.reason)
+        setFeedback('Acesso reativado conforme vinculo existente.')
+      }
+
+      if (portalConfirm.action === 'remove') {
+        await removeClientPortalUserLink(portalConfirm.user.id, portalConfirm.reason)
+        setFeedback('Vinculo removido logicamente. O usuario Auth nao foi apagado.')
+      }
+
+      setPortalConfirm(null)
+      await loadPortalUsers()
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : 'Nao foi possivel concluir a acao.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handlePasswordReset(portalUser: ClientPortalUser) {
+    setResettingPortalUserId(portalUser.id)
+    setFeedback('')
+    setError('')
+    try {
+      await sendClientPortalPasswordReset(portalUser)
       setFeedback('Redefinicao de senha enviada para o e-mail do portal.')
+      await loadPortalUsers()
     } catch (resetError) {
       setError(resetError instanceof Error ? resetError.message : 'Nao foi possivel enviar redefinicao.')
     } finally {
-      setSaving(false)
+      setResettingPortalUserId('')
     }
   }
 
@@ -446,9 +567,10 @@ export function AccountingDocuments() {
               </label>
               <label className="space-y-2 text-sm font-semibold text-slate-700">
                 Permissao
-                <select className={inputClass} value={portalForm.role} onChange={(event) => setPortalForm((current) => ({ ...current, role: event.target.value as 'owner' | 'viewer' }))}>
-                  <option value="viewer">Visualizador</option>
-                  <option value="owner">Responsavel</option>
+                <select className={inputClass} value={portalForm.role} onChange={(event) => setPortalForm((current) => ({ ...current, role: event.target.value as ClientPortalRole }))}>
+                  {portalRoleOptions.map((role) => (
+                    <option key={role.value} value={role.value}>{role.label}</option>
+                  ))}
                 </select>
               </label>
               <Button disabled={saving} isLoading={saving} onClick={handleInvitePortalUser}>
@@ -465,14 +587,44 @@ export function AccountingDocuments() {
                     <div>
                       <p className="font-semibold text-slate-900">{portalUser.fullName || portalUser.email}</p>
                       <p className="text-xs text-slate-500">{portalUser.email}</p>
+                      <p className="mt-1 text-xs text-slate-500">{portalUser.clientName} - {labelPortalRole(portalUser.role)}</p>
                     </div>
-                    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusBadge(portalUser.status)}`}>
-                      {portalUser.status}
+                    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${portalStatusBadge(portalUser.status)}`}>
+                      {labelPortalStatus(portalUser)}
                     </span>
                   </div>
-                  <Button className="mt-3 h-9 px-3 text-xs" disabled={saving} onClick={() => void handlePasswordReset(portalUser.email)} variant="secondary">
-                    Enviar redefinicao
-                  </Button>
+                  <div className="mt-3 grid gap-1 text-xs text-slate-500">
+                    <span>Criado em: {formatDate(portalUser.createdAt)}</span>
+                    <span>Ultimo acesso: {formatDate(portalUser.lastAccessAt)}</span>
+                    {portalUser.recoveryRequestedAt && <span>Ultima redefinicao: {formatDate(portalUser.recoveryRequestedAt)}</span>}
+                  </div>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <Button className="h-9 px-3 text-xs" disabled={saving || portalUser.status === 'removed'} onClick={() => openPortalEdit(portalUser)} variant="secondary">
+                      Editar
+                    </Button>
+                    {portalUser.status === 'disabled' ? (
+                      <Button className="h-9 px-3 text-xs" disabled={saving} onClick={() => openPortalConfirm(portalUser, 'reactivate')} variant="secondary">
+                        Reativar
+                      </Button>
+                    ) : (
+                      <Button className="h-9 px-3 text-xs" disabled={saving || portalUser.status === 'removed'} onClick={() => openPortalConfirm(portalUser, 'disable')} variant="secondary">
+                        Desativar
+                      </Button>
+                    )}
+                    <Button
+                      className="h-9 px-3 text-xs"
+                      disabled={resettingPortalUserId === portalUser.id || !portalUser.authUserId || portalUser.status === 'disabled' || portalUser.status === 'removed'}
+                      isLoading={resettingPortalUserId === portalUser.id}
+                      onClick={() => void handlePasswordReset(portalUser)}
+                      title={!portalUser.authUserId ? 'Sem usuario Auth vinculado para redefinir senha.' : undefined}
+                      variant="secondary"
+                    >
+                      Enviar redefinicao
+                    </Button>
+                    <Button className="h-9 px-3 text-xs text-rose-600 hover:text-rose-700" disabled={saving || portalUser.status === 'removed'} onClick={() => openPortalConfirm(portalUser, 'remove')} variant="ghost">
+                      Remover vinculo
+                    </Button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -575,6 +727,100 @@ export function AccountingDocuments() {
             totalPages={totalPages}
           />
         </section>
+
+        {editingPortalUser && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+            <div className="w-full max-w-2xl rounded-3xl bg-white p-6 shadow-2xl">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.35em] text-indigo-600">Portal do Cliente</p>
+                  <h3 className="mt-2 text-2xl font-bold text-slate-950">Editar acesso</h3>
+                  <p className="mt-1 text-sm text-slate-500">Altere cliente vinculado, nome e permissao. O e-mail fica bloqueado por seguranca.</p>
+                </div>
+                <Button disabled={saving} onClick={() => setEditingPortalUser(null)} variant="secondary">
+                  Fechar
+                </Button>
+              </div>
+
+              <div className="mt-6 grid gap-4 md:grid-cols-2">
+                <label className="space-y-2 text-sm font-semibold text-slate-700 md:col-span-2">
+                  E-mail
+                  <input className={`${inputClass} bg-slate-50 text-slate-500`} disabled value={editingPortalUser.email} />
+                </label>
+                <p className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-700 md:col-span-2">
+                  Troca de e-mail exige endpoint administrativo seguro. Nesta etapa o sistema edita o vinculo sem alterar usuario Auth.
+                </p>
+                <label className="space-y-2 text-sm font-semibold text-slate-700">
+                  Cliente
+                  <select className={inputClass} value={editPortalForm.clientId} onChange={(event) => setEditPortalForm((current) => ({ ...current, clientId: event.target.value }))}>
+                    {clients.map((client) => <option key={client.id} value={client.id}>{client.companyName}</option>)}
+                  </select>
+                </label>
+                <label className="space-y-2 text-sm font-semibold text-slate-700">
+                  Nome
+                  <input className={inputClass} value={editPortalForm.fullName} onChange={(event) => setEditPortalForm((current) => ({ ...current, fullName: event.target.value }))} />
+                </label>
+                <label className="space-y-2 text-sm font-semibold text-slate-700 md:col-span-2">
+                  Permissao
+                  <select className={inputClass} value={editPortalForm.role} onChange={(event) => setEditPortalForm((current) => ({ ...current, role: event.target.value as ClientPortalRole }))}>
+                    {portalRoleOptions.map((role) => (
+                      <option key={role.value} value={role.value}>{role.label} - {role.description}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <div className="mt-6 flex flex-wrap justify-end gap-3">
+                <Button disabled={saving} onClick={() => setEditingPortalUser(null)} variant="secondary">
+                  Cancelar
+                </Button>
+                <Button disabled={saving} isLoading={saving} onClick={() => void handleUpdatePortalAccess()}>
+                  Salvar acesso
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {portalConfirm && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+            <div className="w-full max-w-xl rounded-3xl bg-white p-6 shadow-2xl">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.35em] text-indigo-600">Confirmacao</p>
+                <h3 className="mt-2 text-2xl font-bold text-slate-950">
+                  {portalConfirm.action === 'disable' && 'Desativar acesso'}
+                  {portalConfirm.action === 'reactivate' && 'Reativar acesso'}
+                  {portalConfirm.action === 'remove' && 'Remover vinculo'}
+                </h3>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  {portalConfirm.user.fullName || portalConfirm.user.email} - {portalConfirm.user.email}
+                </p>
+                {portalConfirm.action === 'remove' && (
+                  <p className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                    O vinculo sera removido logicamente. O usuario no Supabase Auth nao sera apagado.
+                  </p>
+                )}
+              </div>
+              <label className="mt-5 block space-y-2 text-sm font-semibold text-slate-700">
+                Motivo ou observacao
+                <textarea
+                  className={`${inputClass} min-h-28`}
+                  onChange={(event) => setPortalConfirm((current) => current ? { ...current, reason: event.target.value } : current)}
+                  placeholder="Opcional, mas recomendado para auditoria."
+                  value={portalConfirm.reason}
+                />
+              </label>
+              <div className="mt-6 flex flex-wrap justify-end gap-3">
+                <Button disabled={saving} onClick={() => setPortalConfirm(null)} variant="secondary">
+                  Cancelar
+                </Button>
+                <Button disabled={saving} isLoading={saving} onClick={() => void handleConfirmPortalAction()}>
+                  Confirmar
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </DashboardLayout>
   )
