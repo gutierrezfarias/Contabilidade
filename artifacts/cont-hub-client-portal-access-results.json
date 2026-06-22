@@ -1,0 +1,43 @@
+{
+  "date": "2026-06-22",
+  "scope": "client_portal_access_management",
+  "implemented": [
+    "edit_portal_access",
+    "change_permission",
+    "disable_access",
+    "reactivate_access",
+    "logical_remove_link",
+    "send_password_reset_for_existing_auth_user",
+    "password_recovery_session_validation",
+    "management_audit_logs",
+    "idempotent_incremental_migration"
+  ],
+  "security_decisions": [
+    "no_auth_user_deletion",
+    "no_service_role_in_frontend",
+    "email_change_blocked_until_secure_admin_backend",
+    "direct_authenticated_writes_revoked_for_client_portal_users"
+  ],
+  "files": [
+    "supabase/migrations/20260622_client_portal_access_management.sql",
+    "src/pages/accounting/AccountingDocuments.tsx",
+    "src/services/accountingDocumentsService.ts",
+    "src/types/accountingDocuments.ts",
+    "src/pages/auth/ResetPassword.tsx",
+    "backend/nfe-api.tests/ClientPortalAccessManagementTests.cs",
+    "reports/cont-hub-client-portal-access-management-report.md",
+    "reports/cont-hub-client-portal-access-manual-tests.md",
+    "reports/cont-hub-client-portal-password-reset-report.md"
+  ],
+  "validation": {
+    "npm_lint": "passed",
+    "npm_build": "passed_with_vite_chunk_warning",
+    "dotnet_build_release_no_restore": "passed",
+    "dotnet_test_no_restore": "passed_136_tests"
+  },
+  "supabase_to_run": "supabase/migrations/20260622_client_portal_access_management.sql",
+  "pending": [
+    "secure_backend_endpoint_for_auth_email_change",
+    "production_supabase_rls_runtime_verification_after_migration"
+  ]
+}
