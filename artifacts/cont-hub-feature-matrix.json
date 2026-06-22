@@ -1,0 +1,126 @@
+{
+  "generatedAt": "2026-06-21",
+  "classification": ["CONCLUIDA", "PARCIAL", "SOMENTE INTERFACE", "SOMENTE BANCO", "SOMENTE BACKEND", "COM ERRO", "NAO IMPLEMENTADA", "BLOQUEADA POR SERVICO EXTERNO"],
+  "items": [
+    {
+      "feature": "Autenticacao e recuperacao de senha",
+      "status": "PARCIAL",
+      "evidence": ["src/services/authService.ts", "src/routes/ProtectedRoute.tsx"],
+      "problem": "Fluxo Supabase existe; validacao auth_email_exists depende migration/RPC aplicada no ambiente.",
+      "risk": "Reset pode falhar se RPC nao existir.",
+      "nextAction": "Validar RPC em Supabase e fluxo email em producao."
+    },
+    {
+      "feature": "Home publica CMS",
+      "status": "PARCIAL",
+      "evidence": ["src/pages/home/Home.tsx", "src/pages/admin/AdminHomePage.tsx", "supabase/migrations/20260528_home_cms.sql"],
+      "problem": "CRUD existe, mas depende RLS/migrations aplicadas e Storage para imagens reais.",
+      "risk": "Conteudo nao refletir se migration/cache falhar.",
+      "nextAction": "Teste manual com insert/update/delete real."
+    },
+    {
+      "feature": "Area admin separada",
+      "status": "PARCIAL",
+      "evidence": ["src/routes/AdminRoute.tsx", "src/pages/admin/AdminDashboard.tsx", "src/pages/admin/AdminClients.tsx"],
+      "problem": "Rotas protegidas por role; alguns paineis como pagamentos ainda placeholder.",
+      "risk": "Admin nao possui todos relatorios operacionais.",
+      "nextAction": "Completar admin pagamentos e auditoria de roles live."
+    },
+    {
+      "feature": "Clientes do contador",
+      "status": "PARCIAL",
+      "evidence": ["src/pages/accounting/ClientManagement.tsx", "src/services/accountingRepository.ts"],
+      "problem": "CRUD real em clients; importacao CSV/documento parcial; anexos salvos em tabela.",
+      "risk": "Arquivos grandes em base64 no banco podem crescer custo/performance.",
+      "nextAction": "Mover arquivos maiores para Supabase Storage com RLS."
+    },
+    {
+      "feature": "Certificado digital A1/PFX/P12",
+      "status": "PARCIAL",
+      "evidence": ["src/pages/accounting/ClientManagement.tsx", "src/services/accountingRepository.ts", "backend/nfe-api/Services/CertificateService.cs"],
+      "problem": "Cadastro, senha visivel/alteravel e arquivo existem conforme requisito; backend carrega certificado.",
+      "risk": "Senha/PFX no banco e frontend e risco alto; preservar fluxo atual, mas requer criptografia/cofre.",
+      "nextAction": "Implementar cofre/criptografia sem alterar UX do campo de senha."
+    },
+    {
+      "feature": "SEFAZ DF-e consulta",
+      "status": "PARCIAL",
+      "evidence": ["src/pages/accounting/gov/Sefaz.tsx", "src/services/sefazDocumentService.ts", "backend/nfe-api/Services/SefazDfeDistributionService.cs"],
+      "problem": "Backend real possui sincronizacao NSU, storage/log/cooldown; depende certificado, ambiente, backend publicado e SEFAZ.",
+      "risk": "Pode retornar zero docs por regra da SEFAZ; nao lista historico completo de emitidas sem XML/importacao/chave.",
+      "nextAction": "Teste homologacao/producao com certificado real e logs Railway."
+    },
+    {
+      "feature": "Emissao NF-e modelo 55",
+      "status": "PARCIAL",
+      "evidence": ["backend/nfe-api/Services/NfeAuthorizationService.cs", "backend/nfe-api/Services/NfeXmlBuilderService.cs", "backend/nfe-api/Services/NfeSignatureService.cs", "backend/nfe-api/Services/NfeSchemaValidationService.cs"],
+      "problem": "Fluxo de gerar/assinar/validar/transmitir existe no backend; proxy Vercel nao expoe todos endpoints legados e precisa XSD/backend/credenciais.",
+      "risk": "Nao comprovado em homologacao real nesta auditoria.",
+      "nextAction": "Teste ponta a ponta com certificado valido, XSD oficial e empresa credenciada."
+    },
+    {
+      "feature": "e-CAC/Receita/Serpro",
+      "status": "PARCIAL",
+      "evidence": ["src/pages/accounting/settings/RevenueFederalSettings.tsx", "backend/nfe-api/Services/SupabaseSerproRepository.cs", "supabase/migrations/20260616_serpro_dual_contract_mode.sql"],
+      "problem": "Modelo dual Serpro/manual existe; consumo real depende contrato, credenciais e endpoints oficiais.",
+      "risk": "BLOQUEADA POR SERVICO EXTERNO para APIs pagas/contratadas.",
+      "nextAction": "Configurar credenciais Serpro e testar endpoints contratados."
+    },
+    {
+      "feature": "Modulo fiscal (perfil/produtos/regras/simulador)",
+      "status": "PARCIAL",
+      "evidence": ["src/pages/accounting/FiscalModule.tsx", "backend/nfe-api/Services/FiscalRuleEngineService.cs", "supabase/migrations/20260610_fiscal_module_foundation.sql"],
+      "problem": "Motor calcula previa e bloqueia emissao com perfil/produto/regra incompletos; dados reais precisam cadastro e aprovacao.",
+      "risk": "Erros fiscais se regras forem cadastradas incorretamente.",
+      "nextAction": "Criar massa de testes fiscais por regime/UF e aprovar regras."
+    },
+    {
+      "feature": "NCM oficial",
+      "status": "PARCIAL",
+      "evidence": ["backend/nfe-api/Services/NcmCatalogService.cs", "api/reference-data/ncm/[action].ts"],
+      "problem": "Catalogo/sync existem; origem oficial depende disponibilidade e rotina operacional.",
+      "risk": "NCM desatualizado se sync nao rodar.",
+      "nextAction": "Agendar/monitorar sincronizacao."
+    },
+    {
+      "feature": "Integracoes contabeis/NetSpeed",
+      "status": "PARCIAL",
+      "evidence": ["src/pages/accounting/Integrations.tsx", "backend/nfe-api/Services/AccountingIntegrationProviders.cs"],
+      "problem": "Manual/file import existe; NetSpeed deliberadamente nao chama endpoint sem documentacao oficial.",
+      "risk": "Nao integra automaticamente com NetSpeed ate obter contrato/documentacao.",
+      "nextAction": "Criar provider real apos documentacao oficial."
+    },
+    {
+      "feature": "Omnichannel",
+      "status": "PARCIAL",
+      "evidence": ["src/pages/omnichannel/Omnichannel.tsx", "api/webhooks/telegram.ts", "api/omnichannel/send-message.ts"],
+      "problem": "Telegram com webhook/envio; Meta/Instagram/Facebook exigem APIs externas e verificacao.",
+      "risk": "Tokens de canal em cadastro ainda exigem cofre em producao.",
+      "nextAction": "Cofre de segredos e conectores Meta oficiais."
+    },
+    {
+      "feature": "Mini CRM",
+      "status": "PARCIAL",
+      "evidence": ["src/pages/miniCrm/MiniCrm.tsx", "supabase/migrations/20260601_apps_pricing_mini_crm_website.sql"],
+      "problem": "CRUD basico de leads existe; conversao para cliente contabil precisa validacao ponta a ponta.",
+      "risk": "Dados duplicados entre lead e client.",
+      "nextAction": "Auditar fluxo converter lead -> clients."
+    },
+    {
+      "feature": "Criar site",
+      "status": "PARCIAL",
+      "evidence": ["src/pages/website/WebsiteBuilder.tsx", "supabase/migrations/20260601_apps_pricing_mini_crm_website.sql"],
+      "problem": "Builder basico existe; publicacao/dominio real nao comprovados.",
+      "risk": "Usuario editar site sem publicacao real.",
+      "nextAction": "Integrar publicacao e dominio."
+    },
+    {
+      "feature": "Pagamentos e liberacao de apps",
+      "status": "PARCIAL",
+      "evidence": ["src/pages/settings/Payments.tsx", "src/services/paymentService.ts"],
+      "problem": "Compra simulada grava localStorage e Supabase; integracao financeira real nao implementada.",
+      "risk": "Nao serve como cobranca real.",
+      "nextAction": "Integrar gateway/PSP e webhook de pagamento."
+    }
+  ]
+}

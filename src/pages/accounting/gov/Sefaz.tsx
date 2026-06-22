@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { AccountingTabs } from '../../../components/accounting/AccountingTabs'
 import { DashboardLayout } from '../../../components/layout/DashboardLayout'
@@ -12,6 +12,8 @@ import { NfeValidationAlerts } from '../../../components/sefaz/NfeValidationAler
 import { Alert } from '../../../components/ui/Alert'
 import { Button } from '../../../components/ui/Button'
 import { Input } from '../../../components/ui/Input'
+import { PaginationControls } from '../../../components/ui/PaginationControls'
+import { usePagination } from '../../../hooks/usePagination'
 import {
   listAccountingClients,
   listCertificateServices,
@@ -26,6 +28,7 @@ import {
   getLatestSefazSyncState,
   listNfeDocuments,
   manifestNfeDocument,
+  type SefazDocumentFilters,
   type ManifestationEventType,
   type SefazQueryType,
   type SefazSyncState,
@@ -38,6 +41,7 @@ import type {
   FiscalDocumentDirection,
   NfeDocument,
 } from '../../../types/accounting'
+import type { SortDirection } from '../../../types/pagination'
 
 type SefazTab = 'consultas' | 'emissao' | 'status'
 type SefazAvailability = 'online' | 'instavel' | 'offline'
@@ -53,6 +57,7 @@ const documentTabs: Array<{ id: FiscalDocumentDirection; label: string; descript
   { id: 'emitida', label: 'Emitidas', description: 'Notas emitidas pelo CNPJ do cliente.' },
   { id: 'transporte', label: 'Transporte', description: 'Documentos vinculados a transporte/CT-e.' },
   { id: 'citada', label: 'Citadas', description: 'Notas em que o CNPJ aparece como interessado.' },
+  { id: 'evento', label: 'Eventos', description: 'Eventos fiscais vinculados as notas do cliente.' },
 ]
 
 const sefazServiceCodes: CertificateServiceCode[] = [
@@ -145,23 +150,50 @@ function downloadTextFile(fileName: string, content: string) {
 }
 
 export function Sefaz() {
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const organizationParam = searchParams.get('organization')
+  const initialDirection = searchParams.get('direction') as FiscalDocumentDirection | null
   const [tab, setTab] = useState<SefazTab>('consultas')
-  const [documentDirection, setDocumentDirection] = useState<FiscalDocumentDirection>('recebida')
+  const [documentDirection, setDocumentDirection] = useState<FiscalDocumentDirection>(
+    documentTabs.some((item) => item.id === initialDirection) ? initialDirection ?? 'recebida' : 'recebida',
+  )
+  const {
+    page: documentsPage,
+    pageSize: documentsPageSize,
+    resetPage: resetDocumentsPage,
+    setPage: setDocumentsPage,
+    setPageSize: setDocumentsPageSize,
+    setSort: setDocumentsSort,
+    sortBy: documentsSortBy,
+    sortDirection: documentsSortDirection,
+  } = usePagination({
+    initialPage: Number(searchParams.get('page') || 1),
+    initialPageSize: Number(searchParams.get('pageSize') || 25),
+    initialSortBy: searchParams.get('sortBy') || 'issueDate',
+    initialSortDirection: searchParams.get('sortDirection') === 'asc' ? 'asc' : 'desc',
+  })
   const [organizationId, setOrganizationId] = useState<string | null>(null)
   const [clients, setClients] = useState<AccountingClient[]>([])
   const [certificates, setCertificates] = useState<DigitalCertificate[]>([])
   const [enabledServices, setEnabledServices] = useState<CertificateServiceCode[]>([])
   const [documents, setDocuments] = useState<NfeDocument[]>([])
+  const [documentsTotal, setDocumentsTotal] = useState(0)
+  const [documentsTotalPages, setDocumentsTotalPages] = useState(1)
   const [syncState, setSyncState] = useState<SefazSyncState | null>(null)
   const [selectedRows, setSelectedRows] = useState<string[]>([])
   const [clientId, setClientId] = useState('')
   const [certificateId, setCertificateId] = useState('')
-  const [dateRange, setDateRange] = useState('90')
-  const [searchField, setSearchField] = useState('accessKey')
-  const [search, setSearch] = useState('')
+  const [dateRange, setDateRange] = useState(searchParams.get('period') || '90')
+  const [searchField, setSearchField] = useState(searchParams.get('searchField') || 'accessKey')
+  const [search, setSearch] = useState(searchParams.get('q') || '')
+  const [debouncedSearch, setDebouncedSearch] = useState(searchParams.get('q') || '')
+  const [xmlStatus, setXmlStatus] = useState<SefazDocumentFilters['xmlStatus']>(
+    (searchParams.get('xml') as SefazDocumentFilters['xmlStatus']) || 'all',
+  )
+  const [manifestationStatus, setManifestationStatus] = useState(searchParams.get('manifestation') || 'all')
   const [accessKeyLookup, setAccessKeyLookup] = useState('')
   const [lastConsultation, setLastConsultation] = useState('')
+  const [isLoadingDocuments, setIsLoadingDocuments] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [isConsultingAccessKey, setIsConsultingAccessKey] = useState(false)
   const [isManifesting, setIsManifesting] = useState(false)
@@ -173,6 +205,7 @@ export function Sefaz() {
   const [error, setError] = useState('')
   const [syncStateError, setSyncStateError] = useState('')
   const [clockNow, setClockNow] = useState(() => Date.now())
+  const documentsRequestSeq = useRef(0)
   const selectedCertificate = certificates.find((certificate) => certificate.id === certificateId) ?? null
   const selectedClient = clients.find((client) => client.id === clientId) ?? null
   const selectedCertificateEnvironment = selectedCertificate?.environment ?? ''
@@ -285,7 +318,7 @@ export function Sefaz() {
   )
 
   useEffect(() => {
-    resolveOrganizationId(searchParams.get('organization'))
+    resolveOrganizationId(organizationParam)
       .then(async (loadedOrganizationId) => {
         setOrganizationId(loadedOrganizationId)
         const loadedClients = await listAccountingClients(loadedOrganizationId)
@@ -295,7 +328,7 @@ export function Sefaz() {
       .catch((loadError) =>
         setError(loadError instanceof Error ? loadError.message : 'Erro ao carregar clientes.'),
       )
-  }, [searchParams])
+  }, [organizationParam])
 
   useEffect(() => {
     let active = true
@@ -354,22 +387,113 @@ export function Sefaz() {
     }
   }, [certificateId])
 
-  const loadDocuments = useCallback(async () => {
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedSearch(search.trim())
+      resetDocumentsPage()
+    }, 400)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [resetDocumentsPage, search])
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      resetDocumentsPage()
+      setSelectedRows([])
+    }, 0)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [
+    clientId,
+    dateRange,
+    documentDirection,
+    manifestationStatus,
+    resetDocumentsPage,
+    searchField,
+    xmlStatus,
+  ])
+
+  useEffect(() => {
+    setSearchParams((current) => {
+      const params = new URLSearchParams(current)
+      params.set('page', String(documentsPage))
+      params.set('pageSize', String(documentsPageSize))
+      params.set('sortBy', documentsSortBy)
+      params.set('sortDirection', documentsSortDirection)
+      params.set('period', dateRange)
+      params.set('searchField', searchField)
+      params.set('direction', documentDirection)
+      if (debouncedSearch) params.set('q', debouncedSearch)
+      else params.delete('q')
+      if (xmlStatus && xmlStatus !== 'all') params.set('xml', xmlStatus)
+      else params.delete('xml')
+      if (manifestationStatus !== 'all') params.set('manifestation', manifestationStatus)
+      else params.delete('manifestation')
+      return params
+    }, { replace: true })
+  }, [
+    dateRange,
+    debouncedSearch,
+    documentDirection,
+    documentsPage,
+    documentsPageSize,
+    documentsSortBy,
+    documentsSortDirection,
+    manifestationStatus,
+    searchField,
+    setSearchParams,
+    xmlStatus,
+  ])
+
+  const loadDocuments = useCallback(async (overrides: Partial<SefazDocumentFilters> = {}) => {
     if (!organizationId) return
+
+    const requestId = documentsRequestSeq.current + 1
+    documentsRequestSeq.current = requestId
+    setIsLoadingDocuments(true)
 
     try {
       const loadedDocuments = await listNfeDocuments(organizationId, clientId, {
-        dateRange,
-        direction: documentDirection,
-        search,
-        searchField,
+        dateRange: overrides.dateRange ?? dateRange,
+        direction: overrides.direction ?? documentDirection,
+        manifestationStatus: overrides.manifestationStatus ?? manifestationStatus,
+        page: overrides.page ?? documentsPage,
+        pageSize: overrides.pageSize ?? documentsPageSize,
+        search: overrides.search ?? debouncedSearch,
+        searchField: overrides.searchField ?? searchField,
+        sortBy: overrides.sortBy ?? documentsSortBy,
+        sortDirection: overrides.sortDirection ?? documentsSortDirection,
+        xmlStatus: overrides.xmlStatus ?? xmlStatus,
       })
-      setDocuments(loadedDocuments)
+      if (requestId !== documentsRequestSeq.current) return
+      setDocuments(loadedDocuments.data)
+      setDocumentsTotal(loadedDocuments.total)
+      setDocumentsTotalPages(loadedDocuments.totalPages)
       setSelectedRows([])
+      if (loadedDocuments.total > 0 && loadedDocuments.page > loadedDocuments.totalPages) {
+        setDocumentsPage(loadedDocuments.totalPages)
+      }
     } catch (loadError) {
+      if (requestId !== documentsRequestSeq.current) return
       setError(loadError instanceof Error ? loadError.message : 'Nao foi possivel carregar NF-e/DF-e.')
+    } finally {
+      if (requestId === documentsRequestSeq.current) setIsLoadingDocuments(false)
     }
-  }, [clientId, dateRange, documentDirection, organizationId, search, searchField])
+  }, [
+    clientId,
+    dateRange,
+    debouncedSearch,
+    documentDirection,
+    documentsPage,
+    documentsPageSize,
+    documentsSortBy,
+    documentsSortDirection,
+    manifestationStatus,
+    organizationId,
+    searchField,
+    setDocumentsPage,
+    xmlStatus,
+  ])
 
   const loadSyncState = useCallback(async () => {
     if (!organizationId || !clientId || !certificateId) {
@@ -413,6 +537,7 @@ export function Sefaz() {
 
   function changeDocumentDirection(value: FiscalDocumentDirection) {
     setDocumentDirection(value)
+    setDocumentsPage(1)
     setFeedback(documentTabs.find((item) => item.id === value)?.description ?? '')
     setError('')
   }
@@ -483,7 +608,8 @@ export function Sefaz() {
       setFeedback(
         `${result.message}${sefazReturn ? ` ${sefazReturn}.` : ''}`,
       )
-      await loadDocuments()
+      setDocumentsPage(1)
+      await loadDocuments({ page: 1 })
       await loadSyncState()
     } catch (consultError) {
       setFeedback('')
@@ -520,16 +646,24 @@ export function Sefaz() {
       const nextDirection = inferDirectionFromAccessKey(result.accessKey, selectedClient)
       setLastConsultation(new Date().toLocaleString('pt-BR'))
       setSearch('')
+      setDebouncedSearch('')
       setDateRange('all')
       setDocumentDirection(nextDirection)
+      setDocumentsPage(1)
       setFeedback(result.message)
       const refreshedDocuments = await listNfeDocuments(organizationId, clientId, {
         dateRange: 'all',
         direction: nextDirection,
+        page: 1,
+        pageSize: documentsPageSize,
         search: '',
         searchField,
+        sortBy: documentsSortBy,
+        sortDirection: documentsSortDirection,
       })
-      setDocuments(refreshedDocuments)
+      setDocuments(refreshedDocuments.data)
+      setDocumentsTotal(refreshedDocuments.total)
+      setDocumentsTotalPages(refreshedDocuments.totalPages)
       setSelectedRows([])
       await loadSyncState()
     } catch (consultError) {
@@ -574,7 +708,9 @@ export function Sefaz() {
 
   function toggleAllRows() {
     setSelectedRows((current) =>
-      current.length === documents.length ? [] : documents.map((document) => document.id),
+      documents.length > 0 && current.length === documents.length
+        ? []
+        : documents.map((document) => document.id),
     )
   }
 
@@ -888,7 +1024,10 @@ export function Sefaz() {
               onConsult={(queryType) => void refreshDocuments(queryType)}
             />
             <ToolbarButton label="Colunas" onClick={() => setFeedback('Colunas padrao: DANFE, emissao, chave, empresa, valor e manifestacao.')} />
-            <ToolbarButton label="Filtrar" onClick={() => void loadDocuments()} />
+            <ToolbarButton label="Filtrar" onClick={() => {
+              setDocumentsPage(1)
+              void loadDocuments({ page: 1, search: search.trim() })
+            }} />
             <ToolbarButton label="Relatorios" onClick={() => setFeedback('Relatorios fiscais serao gerados com base nos documentos selecionados.')} />
             <ToolbarButton label="Etiquetas" onClick={() => setFeedback('Etiquetas fiscais preparadas para classificacao futura.')} />
             <ToolbarButton label="Envio e Download" onClick={downloadSelectedXmls} />
@@ -913,7 +1052,7 @@ export function Sefaz() {
             )}
           </div>
 
-          <div className="mt-5 grid gap-3 lg:grid-cols-[190px_1fr_220px]">
+          <div className="mt-5 grid gap-3 lg:grid-cols-[190px_1fr_180px_180px_220px]">
             <Select id="search-field" label="Buscar por" onChange={setSearchField} value={searchField}>
               <option value="accessKey">Chave de acesso</option>
               <option value="number">Numero da NF-e</option>
@@ -925,11 +1064,33 @@ export function Sefaz() {
               label="Pesquisa"
               onChange={(event) => setSearch(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === 'Enter') void loadDocuments()
+                if (event.key === 'Enter') {
+                  setDebouncedSearch(search.trim())
+                  setDocumentsPage(1)
+                  void loadDocuments({ page: 1, search: search.trim() })
+                }
               }}
               placeholder="Busque por numero, chave, empresa ou documento"
               value={search}
             />
+            <Select
+              id="xml-status"
+              label="XML"
+              onChange={(value) => setXmlStatus(value as SefazDocumentFilters['xmlStatus'])}
+              value={xmlStatus ?? 'all'}
+            >
+              <option value="all">Todos</option>
+              <option value="full">XML completo</option>
+              <option value="summary">Resumo DF-e</option>
+            </Select>
+            <Select id="manifestation-status" label="Manifestacao" onChange={setManifestationStatus} value={manifestationStatus}>
+              <option value="all">Todas</option>
+              <option value="Pendente">Pendente</option>
+              <option value="Ciencia da Operacao">Ciencia da Operacao</option>
+              <option value="Confirmacao da Operacao">Confirmacao da Operacao</option>
+              <option value="Desconhecimento da Operacao">Desconhecimento da Operacao</option>
+              <option value="Operacao nao Realizada">Operacao nao Realizada</option>
+            </Select>
             <Select id="date-range" label="Data de emissao" onChange={setDateRange} value={dateRange}>
               <option value="30">Ultimos 30 dias</option>
               <option value="90">Ultimos 90 dias</option>
@@ -940,7 +1101,8 @@ export function Sefaz() {
           </div>
 
           <div className="mt-5 rounded-xl bg-slate-50 p-4 text-sm text-slate-600">
-            Valor total da(s) <strong>{documents.length}</strong> nota(s) do filtro aplicado:{' '}
+            Valor total da pagina atual, com <strong>{documents.length}</strong> de{' '}
+            <strong>{documentsTotal}</strong> documento(s) filtrado(s):{' '}
             <strong className="text-slate-900">{formatCurrency.format(totalAmount)}</strong>
           </div>
 
@@ -950,10 +1112,10 @@ export function Sefaz() {
               onClick={toggleAllRows}
               type="button"
             >
-              Selecionar todas {selectedRows.length}/{documents.length}
+              Selecionar todos desta pagina {selectedRows.length}/{documents.length}
             </button>
             <p className="text-xs text-slate-500">
-              A consulta direta usa DF-e/NSU para documentos de interesse. Emitidas aparecem quando forem importadas, emitidas pelo sistema ou consultadas por chave.
+              A paginacao navega apenas pelos registros salvos no Cont Hub. Para exportar todos os filtrados, use uma exportacao backend dedicada; este botao baixa somente os selecionados desta pagina.
             </p>
           </div>
 
@@ -961,8 +1123,21 @@ export function Sefaz() {
             documents={documents}
             onOpenDanfe={openDanfe}
             onDownloadXml={downloadXml}
+            onSortChange={setDocumentsSort}
             onToggleRow={toggleRow}
             selectedRows={selectedRows}
+            sortBy={documentsSortBy}
+            sortDirection={documentsSortDirection}
+          />
+          <PaginationControls
+            disabled={isLoadingDocuments || isRefreshing}
+            label="documento(s) fiscal(is)"
+            onPageChange={setDocumentsPage}
+            onPageSizeChange={setDocumentsPageSize}
+            page={documentsPage}
+            pageSize={documentsPageSize}
+            total={documentsTotal}
+            totalPages={documentsTotalPages}
           />
         </section>
       )}
@@ -1177,14 +1352,20 @@ function NfeGrid({
   documents,
   onDownloadXml,
   onOpenDanfe,
+  onSortChange,
   onToggleRow,
   selectedRows,
+  sortBy,
+  sortDirection,
 }: {
   documents: NfeDocument[]
   onDownloadXml: (document: NfeDocument) => void
   onOpenDanfe: (document: NfeDocument) => void
+  onSortChange: (sortBy: string) => void
   onToggleRow: (documentId: string) => void
   selectedRows: string[]
+  sortBy: string
+  sortDirection: SortDirection
 }) {
   return (
     <div className="mt-5 overflow-x-auto">
@@ -1193,11 +1374,11 @@ function NfeGrid({
           <tr>
             <th className="pb-4">Sel.</th>
             <th className="pb-4">Ver DANFE</th>
-            <th className="pb-4">Emissao</th>
-            <th className="pb-4">Chave de acesso</th>
+            <SortHeader activeSort={sortBy} direction={sortDirection} label="Emissao" onSortChange={onSortChange} sortKey="issueDate" />
+            <SortHeader activeSort={sortBy} direction={sortDirection} label="Chave de acesso" onSortChange={onSortChange} sortKey="accessKey" />
             <th className="pb-4">Arquivo</th>
-            <th className="pb-4">Empresa</th>
-            <th className="pb-4">Valor</th>
+            <SortHeader activeSort={sortBy} direction={sortDirection} label="Empresa" onSortChange={onSortChange} sortKey="company" />
+            <SortHeader activeSort={sortBy} direction={sortDirection} label="Valor" onSortChange={onSortChange} sortKey="amount" />
             <th className="pb-4">Prazo manifestacao</th>
             <th className="pb-4">Baixar</th>
           </tr>
@@ -1290,5 +1471,35 @@ function NfeGrid({
         </p>
       )}
     </div>
+  )
+}
+
+function SortHeader({
+  activeSort,
+  direction,
+  label,
+  onSortChange,
+  sortKey,
+}: {
+  activeSort: string
+  direction: SortDirection
+  label: string
+  onSortChange: (sortBy: string) => void
+  sortKey: string
+}) {
+  const isActive = activeSort === sortKey
+  const marker = isActive ? (direction === 'asc' ? '↑' : '↓') : '↕'
+
+  return (
+    <th className="pb-4">
+      <button
+        className="inline-flex items-center gap-1 text-left text-xs font-semibold uppercase tracking-wide text-slate-400 hover:text-indigo-600"
+        onClick={() => onSortChange(sortKey)}
+        type="button"
+      >
+        <span>{label}</span>
+        <span aria-hidden="true">{marker}</span>
+      </button>
+    </th>
   )
 }

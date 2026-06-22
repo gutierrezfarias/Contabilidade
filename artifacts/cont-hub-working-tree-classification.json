@@ -1,0 +1,80 @@
+{
+  "generatedAt": "2026-06-21",
+  "commandsExecuted": [
+    "git status --short",
+    "git diff --stat",
+    "git diff --name-only",
+    "git ls-files --others --exclude-standard"
+  ],
+  "trackedModified": [
+    {
+      "path": "src/pages/accounting/ClientManagement.tsx",
+      "classification": "alteracao anterior de paginacao",
+      "preserve": true
+    },
+    {
+      "path": "src/pages/accounting/gov/Sefaz.tsx",
+      "classification": "alteracao anterior de SEFAZ/DF-e",
+      "preserve": true
+    },
+    {
+      "path": "src/pages/admin/AdminClients.tsx",
+      "classification": "alteracao anterior de paginacao",
+      "preserve": true
+    },
+    {
+      "path": "src/services/sefazDocumentService.ts",
+      "classification": "alteracao anterior de SEFAZ/DF-e",
+      "preserve": true
+    },
+    {
+      "path": "api/nfe/[action].ts",
+      "classification": "correcao desta execucao",
+      "preserve": true
+    },
+    {
+      "path": "backend/nfe-api/Program.cs",
+      "classification": "correcao desta execucao",
+      "preserve": true
+    },
+    {
+      "path": "supabase/diagnostics/20260613_sefaz_dfe_distribution_diagnostic.sql",
+      "classification": "correcao desta execucao",
+      "preserve": true
+    }
+  ],
+  "untracked": [
+    { "path": "artifacts/cont-hub-api-inventory.json", "classification": "auditoria" },
+    { "path": "artifacts/cont-hub-database-inventory.json", "classification": "auditoria" },
+    { "path": "artifacts/cont-hub-feature-matrix-final.json", "classification": "auditoria" },
+    { "path": "artifacts/cont-hub-feature-matrix.json", "classification": "auditoria" },
+    { "path": "artifacts/cont-hub-route-inventory.json", "classification": "auditoria" },
+    { "path": "reports/cont-hub-deployment-checklist.md", "classification": "auditoria" },
+    { "path": "reports/cont-hub-manual-test-guide.md", "classification": "auditoria" },
+    { "path": "reports/cont-hub-master-final-report.md", "classification": "auditoria" },
+    { "path": "reports/cont-hub-master-scope-audit.md", "classification": "auditoria" },
+    { "path": "reports/cont-hub-remaining-gaps.md", "classification": "auditoria" },
+    { "path": "reports/cont-hub-security-report.md", "classification": "auditoria" },
+    { "path": "reports/system-wide-pagination-and-sefaz-list-improvements-2026-06-17.md", "classification": "alteracao anterior de paginacao" },
+    { "path": "src/components/ui/PageSizeSelector.tsx", "classification": "alteracao anterior de paginacao" },
+    { "path": "src/components/ui/PaginationControls.tsx", "classification": "alteracao anterior de paginacao" },
+    { "path": "src/components/ui/PaginationSummary.tsx", "classification": "alteracao anterior de paginacao" },
+    { "path": "src/hooks/usePagination.ts", "classification": "alteracao anterior de paginacao" },
+    { "path": "src/types/pagination.ts", "classification": "alteracao anterior de paginacao" },
+    { "path": "supabase/migrations/20260617_dfe_pagination_indexes.sql", "classification": "alteracao anterior de paginacao" },
+    { "path": "backend/nfe-api/Services/SecretProvider.cs", "classification": "correcao desta execucao" },
+    { "path": "backend/nfe-api.tests/SecretProviderTests.cs", "classification": "correcao desta execucao" },
+    { "path": "reports/cont-hub-remediation-backlog.md", "classification": "correcao desta execucao" },
+    { "path": "reports/cont-hub-secrets-map.md", "classification": "correcao desta execucao" },
+    { "path": "supabase/diagnostics/20260621_cont_hub_schema_security_diagnostic.sql", "classification": "correcao desta execucao" },
+    { "path": "supabase/migrations/20260621_dfe_logical_identity_indexes.sql", "classification": "correcao desta execucao" },
+    { "path": "supabase/tests/20260621_cont_hub_security_isolation_checks.sql", "classification": "correcao desta execucao" },
+    { "path": "reports/cont-hub-remediation-report.md", "classification": "correcao desta execucao" },
+    { "path": "reports/cont-hub-external-validation-plan.md", "classification": "correcao desta execucao" },
+    { "path": "artifacts/cont-hub-remediation-results.json", "classification": "correcao desta execucao" },
+    { "path": "reports/cont-hub-working-tree-classification.md", "classification": "correcao desta execucao" },
+    { "path": "artifacts/cont-hub-working-tree-classification.json", "classification": "correcao desta execucao" }
+  ],
+  "destructiveCommandsRun": false,
+  "commitPushDeployRun": false
+}

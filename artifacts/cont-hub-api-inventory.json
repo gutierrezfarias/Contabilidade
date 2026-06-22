@@ -1,0 +1,48 @@
+{
+  "generatedAt": "2026-06-21",
+  "vercelApi": [
+    { "path": "/api/clientes/importar-documento", "file": "api/clientes/importar-documento.ts", "status": "PARCIAL", "notes": "Importacao de documento por PDF/imagem, OCR/regex/API CNPJ. Usa service role no serverless." },
+    { "path": "/api/dfe/sync", "file": "api/dfe/sync.ts", "status": "CONCLUIDA", "notes": "Proxy POST para backend .NET /api/dfe/sync. Exige Authorization." },
+    { "path": "/api/dfe/[...path]", "file": "api/dfe/[...path].ts", "status": "PARCIAL", "notes": "Proxy generico para DF-e, accounting integrations, Serpro e Receita. Exige Authorization." },
+    { "path": "/api/nfe/[action]", "file": "api/nfe/[action].ts", "status": "PARCIAL", "notes": "Expoe apenas authorize, drafts, generate-xml, sign, tax-preview, validate. Nem todos os endpoints .NET estao publicados pelo proxy." },
+    { "path": "/api/reference-data/ncm/[action]", "file": "api/reference-data/ncm/[action].ts", "status": "PARCIAL", "notes": "Proxy para busca/sync/status de NCM no backend." },
+    { "path": "/api/sefaz/consultar-chave", "file": "api/sefaz/consultar-chave.ts", "status": "PARCIAL", "notes": "Proxy/endpoint de consulta por chave." },
+    { "path": "/api/sefaz/consultar-dfe", "file": "api/sefaz/consultar-dfe.ts", "status": "PARCIAL", "notes": "Proxy/endpoint DF-e." },
+    { "path": "/api/sefaz/manifestar", "file": "api/sefaz/manifestar.ts", "status": "PARCIAL", "notes": "Manifestacao depende backend fiscal e certificado." },
+    { "path": "/api/omnichannel/activate-telegram-webhook", "file": "api/omnichannel/activate-telegram-webhook.ts", "status": "PARCIAL", "notes": "Ativa webhook Telegram pelo token do contador." },
+    { "path": "/api/omnichannel/send-message", "file": "api/omnichannel/send-message.ts", "status": "PARCIAL", "notes": "Envio de mensagem, principalmente Telegram." },
+    { "path": "/api/webhooks/telegram", "file": "api/webhooks/telegram.ts", "status": "PARCIAL", "notes": "Recebe webhook Telegram e grava conversas/mensagens." },
+    { "path": "/api/google-business", "file": "api/google-business.ts", "status": "PARCIAL", "notes": "OAuth/Google Business Profile depende variaveis Google e permissao externa." }
+  ],
+  "dotnetApi": {
+    "source": "backend/nfe-api/Program.cs",
+    "highlights": [
+      "GET /health",
+      "GET /api/sefaz/status",
+      "POST /api/dfe/sync",
+      "GET /api/dfe/documents",
+      "POST /api/dfe/query/nsu",
+      "POST /api/dfe/query/access-key",
+      "POST /api/dfe/documents/{id}/manifest",
+      "GET/POST /api/reference-data/ncm/*",
+      "CRUD /api/accounting-integrations",
+      "POST /api/accounting-imports/preview",
+      "POST /api/accounting-imports/confirm",
+      "POST /api/nfe/tax-preview",
+      "POST /api/nfe/drafts",
+      "POST /api/nfe/validate",
+      "POST /api/nfe/generate-xml",
+      "POST /api/nfe/sign",
+      "POST /api/nfe/authorize",
+      "POST /api/nfe/emitir",
+      "POST /api/nfe/consultar-retorno",
+      "POST /api/nfe/consultar-chave",
+      "POST /api/nfe/cancelar",
+      "POST /api/nfe/inutilizar",
+      "Admin/Serpro endpoints",
+      "Revenue/Serpro/manual import endpoints"
+    ],
+    "authorization": "Most endpoints call RequireUserAsync and EnsureOrganizationAccessAsync.",
+    "risk": "Some .NET endpoints are not exposed through the Vercel proxy allowlist."
+  }
+}

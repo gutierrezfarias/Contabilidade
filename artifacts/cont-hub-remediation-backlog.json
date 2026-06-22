@@ -1,0 +1,113 @@
+{
+  "generatedAt": "2026-06-21",
+  "priorities": [
+    {
+      "priority": "P0",
+      "theme": "Seguranca, isolamento e perda de dados",
+      "items": [
+        {
+          "gap": "Validacao live de RLS/grants no Supabase",
+          "source": "reports/cont-hub-security-report.md",
+          "plannedAction": "Criar diagnostico SQL somente leitura e roteiro de teste RLS parametrizado.",
+          "status": "em_correcao_local"
+        },
+        {
+          "gap": "Segredos fiscais e tokens ainda sem cofre real",
+          "source": "reports/cont-hub-security-report.md",
+          "plannedAction": "Mapear segredos, documentar classificacao e preparar abstracao backend sem alterar fluxo atual da senha do certificado.",
+          "status": "em_correcao_local"
+        },
+        {
+          "gap": "Service role pode burlar RLS se endpoint falhar validacao",
+          "source": "reports/cont-hub-master-final-report.md",
+          "plannedAction": "Criar diagnostico e revisar endpoints/proxies; nao expor segredos em logs.",
+          "status": "em_correcao_local"
+        },
+        {
+          "gap": "DF-e nao pode perder XML completo nem duplicar por schema_name",
+          "source": "prompt atual Fase 4",
+          "plannedAction": "Criar migration segura para identidade organization_id + client_id + access_key e testes automatizados.",
+          "status": "em_correcao_local"
+        }
+      ]
+    },
+    {
+      "priority": "P1",
+      "theme": "Fiscal NF-e/DF-e",
+      "items": [
+        {
+          "gap": "Proxy Vercel nao expoe todos endpoints .NET historicos de NF-e",
+          "source": "reports/cont-hub-remaining-gaps.md",
+          "plannedAction": "Ampliar allowlist do proxy /api/nfe/[action] para endpoints ja existentes no backend, sem inventar rotas.",
+          "status": "em_correcao_local"
+        },
+        {
+          "gap": "Homologacao real NF-e depende credenciais/certificado/XSD/backend publicado",
+          "source": "reports/cont-hub-master-final-report.md",
+          "plannedAction": "Criar plano de validacao externa reproduzivel; nao marcar como testado localmente.",
+          "status": "documentar"
+        },
+        {
+          "gap": "Massa de testes fiscais incompleta",
+          "source": "reports/cont-hub-remaining-gaps.md",
+          "plannedAction": "Adicionar testes unitarios locais para bloqueios/gates que nao dependem de SEFAZ.",
+          "status": "em_correcao_local"
+        }
+      ]
+    },
+    {
+      "priority": "P2",
+      "theme": "Funcoes essenciais do escritorio",
+      "items": [
+        {
+          "gap": "Importacao/exportacao CSV/XLSX precisa hardening",
+          "plannedAction": "Criar plano e testes de CSV Injection/preview/idempotencia; evitar grandes dependencias novas.",
+          "status": "pendente"
+        },
+        {
+          "gap": "Admin pagamentos placeholder",
+          "plannedAction": "Implementar em fase posterior apos gateway real definido.",
+          "status": "pendente"
+        }
+      ]
+    },
+    {
+      "priority": "P3",
+      "theme": "Portal e experiencia",
+      "items": [
+        {
+          "gap": "Website Builder sem publicacao/dominio real comprovados",
+          "plannedAction": "Definir pipeline de publicacao e dominio.",
+          "status": "pendente"
+        }
+      ]
+    },
+    {
+      "priority": "P4",
+      "theme": "Funcionalidades adicionais",
+      "items": [
+        {
+          "gap": "Psicologa IA",
+          "plannedAction": "Manter fora do escopo desta execucao.",
+          "status": "fora_do_escopo"
+        },
+        {
+          "gap": "Ponto/folha",
+          "plannedAction": "Manter externo e integrado apenas por catalogo/API futura.",
+          "status": "fora_do_escopo"
+        }
+      ]
+    },
+    {
+      "priority": "P5",
+      "theme": "Dependencias externas",
+      "items": [
+        {
+          "gap": "Serpro real, Meta APIs, gateway pagamento, NetSpeed real",
+          "plannedAction": "Classificar como bloqueado por servico externo ate existirem contrato, credenciais e documentacao oficial.",
+          "status": "bloqueado"
+        }
+      ]
+    }
+  ]
+}

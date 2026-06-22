@@ -29,6 +29,7 @@ builder.Services.AddCors(options =>
 });
 
 builder.Services.AddHttpClient();
+builder.Services.AddSingleton<ISecretProvider, EnvironmentSecretProvider>();
 builder.Services.AddSingleton<NfeEndpointResolver>();
 builder.Services.AddScoped<CertificateService>();
 builder.Services.AddScoped<DanfePdfService>();

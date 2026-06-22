@@ -1,5 +1,12 @@
 import { supabase } from './supabase'
 import type { FiscalDocumentDirection, NfeDocument } from '../types/accounting'
+import {
+  createEmptyPaginatedResult,
+  createPaginatedResult,
+  getPaginationRange,
+  type PaginatedResult,
+  type SortDirection,
+} from '../types/pagination'
 
 type NfeInput = Omit<
   NfeDocument,
@@ -66,8 +73,14 @@ export type SefazConsultationResult = {
 export type SefazDocumentFilters = {
   dateRange?: string
   direction?: FiscalDocumentDirection
+  manifestationStatus?: string
+  page?: number
+  pageSize?: number
   search?: string
   searchField?: string
+  sortBy?: string
+  sortDirection?: SortDirection
+  xmlStatus?: 'all' | 'full' | 'summary' | 'missing'
 }
 
 export type ManifestationEventType = '210200' | '210210' | '210220' | '210240'
@@ -101,6 +114,69 @@ function fail(error: { message: string } | null, fallback: string) {
 
 function onlyDigits(value: string | undefined) {
   return String(value ?? '').replace(/\D/g, '')
+}
+
+function sanitizePostgrestSearch(value: string) {
+  return value.trim().replace(/[,%]/g, ' ')
+}
+
+function buildIlike(value: string) {
+  return `%${sanitizePostgrestSearch(value)}%`
+}
+
+const dfeSortableColumns = new Set([
+  'access_key',
+  'created_at',
+  'issue_date',
+  'issuer_name',
+  'recipient_name',
+  'total_value',
+  'updated_at',
+])
+
+function resolveDfeSortColumn(sortBy?: string) {
+  const columnMap: Record<string, string> = {
+    accessKey: 'access_key',
+    amount: 'total_value',
+    company: 'issuer_name',
+    createdAt: 'created_at',
+    issueDate: 'issue_date',
+    updatedAt: 'updated_at',
+  }
+  const resolved = columnMap[sortBy ?? ''] ?? sortBy ?? 'issue_date'
+  return dfeSortableColumns.has(resolved) ? resolved : 'issue_date'
+}
+
+function applyDfeSearch<T extends {
+  ilike: (column: string, pattern: string) => T
+  or: (filters: string) => T
+}>(
+  query: T,
+  search: string,
+  searchField?: string,
+) {
+  const trimmedSearch = sanitizePostgrestSearch(search)
+  if (!trimmedSearch) return query
+
+  const like = buildIlike(trimmedSearch)
+  const digits = onlyDigits(trimmedSearch)
+  const digitLike = digits ? `%${digits}%` : like
+
+  if (searchField === 'accessKey') return query.ilike('access_key', like)
+  if (searchField === 'company') return query.or(`issuer_name.ilike.${like},recipient_name.ilike.${like}`)
+  if (searchField === 'document') return query.or(`issuer_cnpj.ilike.${digitLike},recipient_cnpj.ilike.${digitLike}`)
+  if (searchField === 'number') return query.or(`access_key.ilike.${like},nsu.ilike.${like}`)
+
+  return query.or(
+    [
+      `access_key.ilike.${like}`,
+      `nsu.ilike.${like}`,
+      `issuer_name.ilike.${like}`,
+      `recipient_name.ilike.${like}`,
+      `issuer_cnpj.ilike.${digitLike}`,
+      `recipient_cnpj.ilike.${digitLike}`,
+    ].join(','),
+  )
 }
 
 function mapDfe(row: Record<string, unknown>): NfeDocument {
@@ -167,16 +243,20 @@ export async function listNfeDocuments(
   organizationId: string | null,
   clientId?: string,
   filters: SefazDocumentFilters = {},
-) {
-  if (!organizationId) return []
+): Promise<PaginatedResult<NfeDocument>> {
+  if (!organizationId) return createEmptyPaginatedResult(filters.page, filters.pageSize)
+
+  const page = filters.page ?? 1
+  const pageSize = filters.pageSize ?? 25
+  const { from, to } = getPaginationRange(page, pageSize)
+  const sortColumn = resolveDfeSortColumn(filters.sortBy)
+  const sortDirection = filters.sortDirection === 'asc' ? 'asc' : 'desc'
 
   let query = supabase
     .from('nfe_dfe_documents')
-    .select('*')
+    .select('*', { count: 'exact' })
     .eq('organization_id', organizationId)
     .eq('active', true)
-    .order('issue_date', { ascending: false, nullsFirst: false })
-    .order('created_at', { ascending: false })
 
   if (clientId) {
     query = query.eq('client_id', clientId)
@@ -195,26 +275,29 @@ export async function listNfeDocuments(
     }
   }
 
-  const { data, error } = await query
+  if (filters.xmlStatus === 'full') {
+    query = query.eq('has_full_xml', true)
+  }
+
+  if (filters.xmlStatus === 'summary') {
+    query = query.eq('has_full_xml', false)
+  }
+
+  if (filters.manifestationStatus && filters.manifestationStatus !== 'all') {
+    query = query.eq('manifestation_status', filters.manifestationStatus)
+  }
+
+  query = applyDfeSearch(query, filters.search ?? '', filters.searchField)
+
+  query = query
+    .order(sortColumn, { ascending: sortDirection === 'asc', nullsFirst: false })
+    .order('created_at', { ascending: false })
+    .range(from, to)
+
+  const { count, data, error } = await query
   fail(error, 'Nao foi possivel carregar NF-e.')
   const documents = (data ?? []).map((row) => mapDfe(row as Record<string, unknown>))
-
-  const search = (filters.search ?? '').trim().toLowerCase()
-  if (!search) return documents
-
-  return documents.filter((document) => {
-    const values = [
-      document.number,
-      document.accessKey,
-      document.emitterName,
-      document.emitterDocument,
-      document.destinationName,
-      document.destinationDocument,
-      document.recipientName,
-      document.recipientDocument,
-    ]
-    return values.some((value) => value.toLowerCase().includes(search))
-  })
+  return createPaginatedResult(documents, page, pageSize, count ?? 0)
 }
 
 export async function createNfeDraft(input: NfeInput) {

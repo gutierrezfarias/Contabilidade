@@ -4,6 +4,8 @@ import { AdminLayout } from '../../components/layout/AdminLayout'
 import { Alert } from '../../components/ui/Alert'
 import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
+import { PaginationControls } from '../../components/ui/PaginationControls'
+import { usePagination } from '../../hooks/usePagination'
 import { listAdminClients, saveAdminClient } from '../../services/adminClientService'
 import { authService } from '../../services/authService'
 import { lookupCompanyAddress } from '../../services/postalCodeService'
@@ -30,6 +32,13 @@ export function AdminClients() {
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [isSendingPasswordReset, setIsSendingPasswordReset] = useState(false)
+  const {
+    page: clientsPage,
+    pageSize: clientsPageSize,
+    resetPage: resetClientsPage,
+    setPage: setClientsPage,
+    setPageSize: setClientsPageSize,
+  } = usePagination({ initialPageSize: 10 })
 
   useEffect(() => {
     let active = true
@@ -79,6 +88,24 @@ export function AdminClients() {
       return matchesText && matchesStatus && matchesApp && matchesBilling
     })
   }, [clients, filters])
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(resetClientsPage, 0)
+    return () => window.clearTimeout(timeoutId)
+  }, [filters, resetClientsPage])
+
+  const paginatedClients = useMemo(() => {
+    const start = (clientsPage - 1) * clientsPageSize
+    return filteredClients.slice(start, start + clientsPageSize)
+  }, [clientsPage, clientsPageSize, filteredClients])
+
+  const clientsTotalPages = Math.max(Math.ceil(filteredClients.length / clientsPageSize), 1)
+
+  useEffect(() => {
+    if (clientsPage <= clientsTotalPages) return
+    const timeoutId = window.setTimeout(() => setClientsPage(clientsTotalPages), 0)
+    return () => window.clearTimeout(timeoutId)
+  }, [clientsPage, clientsTotalPages, setClientsPage])
 
   const dashboard = useMemo(() => {
     const active = clients.filter((client) => client.active).length
@@ -288,7 +315,7 @@ export function AdminClients() {
               </tr>
             </thead>
             <tbody>
-              {filteredClients.map((client) => {
+              {paginatedClients.map((client) => {
                 const activeApps = client.apps.filter((app) => app.status === 'ativo')
                 return (
                   <tr className="border-t border-slate-100" key={client.id}>
@@ -332,6 +359,16 @@ export function AdminClients() {
             <p className="py-10 text-center text-sm text-slate-500">Nenhum cliente encontrado.</p>
           )}
         </div>
+        <PaginationControls
+          disabled={isLoading}
+          label="cliente(s)"
+          onPageChange={setClientsPage}
+          onPageSizeChange={setClientsPageSize}
+          page={clientsPage}
+          pageSize={clientsPageSize}
+          total={filteredClients.length}
+          totalPages={clientsTotalPages}
+        />
       </section>
 
       {editingClient && (

@@ -132,7 +132,7 @@ select
   con.conname as constraint_name,
   src_ns.nspname || '.' || src.relname as source_table,
   (
-    select array_agg(att.attname order by k.ordinality)
+    select array_agg(att.attname::text order by k.ordinality)
     from unnest(con.conkey) with ordinality as k(attnum, ordinality)
     join pg_attribute att
       on att.attrelid = con.conrelid
@@ -140,7 +140,7 @@ select
   ) as source_columns,
   ref_ns.nspname || '.' || ref.relname as referenced_table,
   (
-    select array_agg(att.attname order by k.ordinality)
+    select array_agg(att.attname::text order by k.ordinality)
     from unnest(con.confkey) with ordinality as k(attnum, ordinality)
     join pg_attribute att
       on att.attrelid = con.confrelid
@@ -442,4 +442,3 @@ from cont_hub_dfe_inconsistencies
 order by
   case severity when 'erro' then 1 when 'aviso' then 2 else 3 end,
   item;
-

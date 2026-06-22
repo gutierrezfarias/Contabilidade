@@ -1,0 +1,74 @@
+{
+  "generatedAt": "2026-06-21",
+  "migrationCount": 36,
+  "keyMigrations": [
+    "20260527_platform_foundation.sql",
+    "20260528_complete_database_user_roles.sql",
+    "20260602_accounting_core_repair.sql",
+    "20260604_nfe_emission_backend.sql",
+    "20260610_fiscal_module_foundation.sql",
+    "20260613_sefaz_dfe_distribution.sql",
+    "20260613_sefaz_dfe_distribution_compatibility.sql",
+    "20260616_accounting_integrations.sql",
+    "20260616_serpro_dual_contract_mode.sql",
+    "20260616_serpro_least_privilege_grants.sql",
+    "20260617_dfe_pagination_indexes.sql",
+    "20260617_dfe_summary_full_xml_upsert.sql"
+  ],
+  "domains": [
+    {
+      "name": "Auth/organizacoes/apps",
+      "tables": ["profiles", "user_roles", "organizations", "organization_members", "organization_app_subscriptions", "referral_rewards"],
+      "rls": "Declarado em migrations principais",
+      "status": "PARCIAL",
+      "risk": "Sem execucao direta no Supabase neste ambiente; evidenciado por SQL local."
+    },
+    {
+      "name": "Contabil/clientes/certificados",
+      "tables": ["clients", "client_payments", "fiscal_obligations", "digital_certificates", "certificate_services", "client_documents", "company_settings", "company_partners", "employees"],
+      "rls": "Declarado em migrations accounting/core",
+      "status": "PARCIAL",
+      "risk": "Senha e PFX/P12 existem no banco conforme requisito do usuario; exige hardening operacional."
+    },
+    {
+      "name": "DF-e/NF-e",
+      "tables": ["nfe_documents", "nfe_sefaz_logs", "nfe_dfe_sync_states", "nfe_dfe_documents", "nfe_dfe_events", "nfe_dfe_sync_logs", "nfe_dfe_access_logs"],
+      "rls": "Declarado em migrations DF-e/NF-e",
+      "status": "PARCIAL",
+      "risk": "Comunicacao real depende backend publicado, XSDs e certificado valido."
+    },
+    {
+      "name": "Fiscal",
+      "tables": ["fiscal_company_profiles", "fiscal_products", "fiscal_rules", "fiscal_rule_conflicts", "fiscal_audit_logs", "ncm_catalog", "ncm_sync_jobs", "fiscal_import_jobs", "fiscal_import_job_rows"],
+      "rls": "Declarado em 20260610_fiscal_module_foundation.sql",
+      "status": "PARCIAL",
+      "risk": "Motor existe no backend, mas o cadastro completo depende dados fiscais reais e aprovacao do contador."
+    },
+    {
+      "name": "Serpro/Receita",
+      "tables": ["serpro_documents", "serpro_requests", "serpro_operation_locks", "serpro_wallet_transactions", "serpro_wallets", "serpro_service_catalog", "serpro_audit_logs", "manual_revenue_import_batches"],
+      "rls": "Declarado em Serpro migrations; grants corrigidos em 20260616_serpro_least_privilege_grants.sql",
+      "status": "PARCIAL",
+      "risk": "Integracao real depende contrato/credenciais Serpro; modo manual existe."
+    },
+    {
+      "name": "Omnichannel",
+      "tables": ["omnichannel_channels", "omnichannel_ai_agents", "omnichannel_message_templates", "omnichannel_conversations", "omnichannel_messages", "omnichannel_document_rules"],
+      "rls": "Declarado em 20260531_omnichannel_foundation.sql",
+      "status": "PARCIAL",
+      "risk": "Telegram parcialmente funcional; WhatsApp/Instagram/Facebook dependem Meta API."
+    },
+    {
+      "name": "Home/admin/site/CRM",
+      "tables": ["home_settings", "home_slides", "home_banners", "home_footer_groups", "home_footer_links", "mini_crm_leads", "website_templates", "website_sites"],
+      "rls": "Declarado em migrations especificas",
+      "status": "PARCIAL",
+      "risk": "Admin pagamentos ainda placeholder; compras ainda simuladas em parte."
+    }
+  ],
+  "diagnostics": {
+    "rlsFilesWithPolicies": "Migrations locais contem enable row level security e create policy em varios dominios.",
+    "leastPrivilegeSerpro": "Migration 20260616_serpro_least_privilege_grants.sql revoga anon/authenticated e reabre somente SELECT onde necessario.",
+    "unverifiedAgainstLiveSupabase": true
+  }
+}

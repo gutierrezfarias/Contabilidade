@@ -1,0 +1,69 @@
+{
+  "generatedAt": "2026-06-21",
+  "commitPushDeployRun": false,
+  "remoteSupabaseChanged": false,
+  "productionDataChanged": false,
+  "corrections": [
+    {
+      "gap": "Proxy Vercel nao expunha todos endpoints .NET historicos de NF-e",
+      "previousStatus": "P1 pendente",
+      "correction": "Route map ampliado para endpoints existentes no backend .NET.",
+      "files": ["api/nfe/[action].ts"],
+      "tests": ["npm.cmd run lint", "npm.cmd run build"],
+      "status": "corrigido localmente"
+    },
+    {
+      "gap": "Validacao live de RLS/grants no Supabase",
+      "previousStatus": "P0 pendente",
+      "correction": "Criado diagnostico SQL somente leitura.",
+      "files": ["supabase/diagnostics/20260621_cont_hub_schema_security_diagnostic.sql"],
+      "tests": ["validacao estatica por rg", "git diff --check"],
+      "status": "pendente executar no Supabase"
+    },
+    {
+      "gap": "Checks de isolamento multiempresa e menor privilegio",
+      "previousStatus": "P0 pendente",
+      "correction": "Criado script SQL read-only de checks.",
+      "files": ["supabase/tests/20260621_cont_hub_security_isolation_checks.sql"],
+      "tests": ["validacao estatica por rg", "git diff --check"],
+      "status": "pendente executar no Supabase"
+    },
+    {
+      "gap": "DF-e nao deve usar schema_name como identidade logica",
+      "previousStatus": "P0 pendente",
+      "correction": "Criada migration idempotente para organization_id + client_id + access_key.",
+      "files": ["supabase/migrations/20260621_dfe_logical_identity_indexes.sql"],
+      "tests": ["dotnet test backend/nfe-api.tests/ContHub.NfeApi.Tests.csproj --no-restore"],
+      "status": "pendente executar no Supabase"
+    },
+    {
+      "gap": "Segredos sem mapa e sem abstracao para novos usos",
+      "previousStatus": "P0 pendente",
+      "correction": "Mapa de segredos e ISecretProvider no backend.",
+      "files": [
+        "reports/cont-hub-secrets-map.md",
+        "backend/nfe-api/Services/SecretProvider.cs",
+        "backend/nfe-api.tests/SecretProviderTests.cs",
+        "backend/nfe-api/Program.cs"
+      ],
+      "tests": ["dotnet test backend/nfe-api.tests/ContHub.NfeApi.Tests.csproj --no-restore"],
+      "status": "corrigido localmente para novos usos"
+    }
+  ],
+  "validation": {
+    "npmLint": "passed",
+    "npmBuild": "passed_with_vite_large_chunk_warning",
+    "dotnetBuild": "passed",
+    "dotnetTests": "passed: 121",
+    "localHealthEndpoint": "passed: GET /health",
+    "gitDiffCheck": "passed_with_line_ending_warnings_only"
+  },
+  "externalPending": [
+    "Run Supabase migration 20260621_dfe_logical_identity_indexes.sql",
+    "Run Supabase diagnostic 20260621_cont_hub_schema_security_diagnostic.sql",
+    "Run Supabase checks 20260621_cont_hub_security_isolation_checks.sql",
+    "Validate Railway backend variables and /health",
+    "Validate SEFAZ homologacao with real certificate",
+    "Define real vault/encryption for PFX, certificate password and tokens"
+  ]
+}

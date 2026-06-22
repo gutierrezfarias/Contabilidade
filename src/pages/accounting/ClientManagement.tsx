@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { PeriodFilter } from '../../components/accounting/PeriodFilter'
@@ -8,6 +8,8 @@ import { DashboardLayout } from '../../components/layout/DashboardLayout'
 import { Alert } from '../../components/ui/Alert'
 import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
+import { PaginationControls } from '../../components/ui/PaginationControls'
+import { usePagination } from '../../hooks/usePagination'
 import {
   createAccountingClient,
   createCertificate,
@@ -233,6 +235,23 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
   const [visibleCertificatePasswordId, setVisibleCertificatePasswordId] = useState<string | null>(null)
   const [enabledServices, setEnabledServices] = useState<CertificateService['serviceCode'][]>([])
   const years = [currentDate.getFullYear(), currentDate.getFullYear() - 1]
+  const {
+    page: clientsPage,
+    pageSize: clientsPageSize,
+    setPage: setClientsPage,
+    setPageSize: setClientsPageSize,
+  } = usePagination({ initialPageSize: 10 })
+  const paginatedClients = useMemo(() => {
+    const start = (clientsPage - 1) * clientsPageSize
+    return clients.slice(start, start + clientsPageSize)
+  }, [clients, clientsPage, clientsPageSize])
+  const clientsTotalPages = Math.max(Math.ceil(clients.length / clientsPageSize), 1)
+
+  useEffect(() => {
+    if (clientsPage <= clientsTotalPages) return
+    const timeoutId = window.setTimeout(() => setClientsPage(clientsTotalPages), 0)
+    return () => window.clearTimeout(timeoutId)
+  }, [clientsPage, clientsTotalPages, setClientsPage])
 
   async function reloadClients(targetOrganizationId: string | null) {
     setClients(await listAccountingClients(targetOrganizationId))
@@ -1164,7 +1183,7 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
             </div>
             {clients.length === 0 && <p className="py-10 text-center text-sm text-slate-500">Nenhum cliente cadastrado.</p>}
             <div className="space-y-3">
-              {clients.map((client) => (
+              {paginatedClients.map((client) => (
                 <div className={`rounded-xl border p-4 transition ${editingId === client.id ? 'border-indigo-300 bg-indigo-50/60 ring-2 ring-indigo-100' : 'border-slate-100 bg-white'}`} key={client.id}>
                   <div className="flex gap-3">
                     {client.photoData && (
@@ -1207,6 +1226,15 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
                 </div>
               ))}
             </div>
+            <PaginationControls
+              label="cliente(s)"
+              onPageChange={setClientsPage}
+              onPageSizeChange={setClientsPageSize}
+              page={clientsPage}
+              pageSize={clientsPageSize}
+              total={clients.length}
+              totalPages={clientsTotalPages}
+            />
             {documentsClientId && (
               <div className="mt-6 rounded-2xl border border-slate-100 bg-slate-50 p-5">
                 <div className="flex items-center justify-between gap-3">

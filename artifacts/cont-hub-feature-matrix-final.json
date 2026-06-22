@@ -1,0 +1,28 @@
+{
+  "generatedAt": "2026-06-21",
+  "source": "artifacts/cont-hub-feature-matrix.json",
+  "summary": {
+    "CONCLUIDA": 1,
+    "PARCIAL": 14,
+    "SOMENTE INTERFACE": 0,
+    "SOMENTE BANCO": 0,
+    "SOMENTE BACKEND": 0,
+    "COM ERRO": 0,
+    "NAO IMPLEMENTADA": 1,
+    "BLOQUEADA POR SERVICO EXTERNO": 1
+  },
+  "validation": {
+    "npmLint": "passed",
+    "npmBuild": "passed",
+    "dotnetBuild": "passed",
+    "dotnetTests": "passed: 121"
+  },
+  "remediation": {
+    "date": "2026-06-21",
+    "proxyNfeEndpoints": "corrigido localmente",
+    "supabaseDiagnostics": "criado, pendente execucao",
+    "dfeLogicalIdentityMigration": "criada, pendente execucao",
+    "secretProvider": "criado para novos usos backend"
+  },
+  "note": "A matriz final aponta para a matriz detalhada. Esta remediacao aplicou correcoes locais P0/P1 sem deploy e sem alterar dados remotos."
+}
