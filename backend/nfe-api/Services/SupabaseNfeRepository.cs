@@ -39,6 +39,20 @@ public sealed class SupabaseNfeRepository(IHttpClientFactory httpClientFactory)
         return document.RootElement.GetProperty("id").GetString() ?? "";
     }
 
+    public async Task EnsurePlatformAdminAsync(string userId, CancellationToken cancellationToken)
+    {
+        var admin = await GetSingleAsync(
+            $"user_roles?select=role&user_id=eq.{Uri.EscapeDataString(userId)}",
+            cancellationToken);
+
+        if (admin.ValueKind == JsonValueKind.Undefined
+            || !admin.TryGetProperty("role", out var role)
+            || !string.Equals(role.GetString(), "admin", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ForbiddenAccessException("Acesso administrativo obrigatorio.");
+        }
+    }
+
     public async Task EnsureOrganizationAccessAsync(string userId, string organizationId, CancellationToken cancellationToken)
     {
         var admin = await GetSingleAsync(

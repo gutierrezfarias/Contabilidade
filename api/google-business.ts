@@ -1,6 +1,6 @@
 /// <reference types="node" />
 
-import { createClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { randomBytes } from 'node:crypto'
 import process from 'node:process'
 
@@ -21,6 +21,16 @@ type VercelResponse = {
 type User = {
   id: string
   email?: string
+}
+
+type JsonObject = { [key: string]: JsonValue | undefined }
+type JsonValue = string | number | boolean | null | JsonObject | JsonValue[]
+
+type SupabaseTable<Row, Insert = Partial<Row>, Update = Partial<Row>> = {
+  Row: Row
+  Insert: Insert
+  Update: Update
+  Relationships: []
 }
 
 type ConnectionRow = {
@@ -48,7 +58,7 @@ type LocationRow = {
   website: string
   sync_status: string
   selected: boolean
-  google_payload: Record<string, unknown> | null
+  google_payload: JsonValue | null
   last_checked_at: string
   last_synced_at: string
   created_at: string
@@ -56,6 +66,7 @@ type LocationRow = {
 }
 
 type CompanySettingsRow = {
+  organization_id?: string
   company_name?: string
   phone?: string
   whatsapp?: string
@@ -70,6 +81,46 @@ type CompanySettingsRow = {
   business_description?: string
 }
 
+type GoogleSyncLogRow = {
+  id: string
+  accountant_id: string
+  google_location_id: string
+  action: string
+  user_id: string
+  user_email: string | null
+  fields_sent: string[] | null
+  old_values: JsonValue
+  new_values: JsonValue
+  status: string
+  error_message: string | null
+  created_at: string
+}
+
+type GoogleSyncLogInsert = Partial<GoogleSyncLogRow> & {
+  accountant_id: string
+  action: string
+  status: string
+}
+
+type GoogleBusinessDatabase = {
+  public: {
+    Tables: {
+      accountant_google_connections: SupabaseTable<ConnectionRow>
+      accountant_google_locations: SupabaseTable<LocationRow>
+      company_settings: SupabaseTable<CompanySettingsRow>
+      google_sync_logs: SupabaseTable<GoogleSyncLogRow, GoogleSyncLogInsert>
+      organization_members: SupabaseTable<{ organization_id: string; user_id: string }>
+      user_roles: SupabaseTable<{ user_id: string; role: string }>
+    }
+    Views: Record<string, never>
+    Functions: Record<string, never>
+    Enums: Record<string, never>
+    CompositeTypes: Record<string, never>
+  }
+}
+
+type GoogleSupabaseClient = SupabaseClient<GoogleBusinessDatabase>
+
 type GoogleLocation = {
   name?: string
   title?: string
@@ -82,7 +133,7 @@ type GoogleLocation = {
     regionCode?: string
   }
   websiteUri?: string
-  regularHours?: unknown
+  regularHours?: JsonValue
   profile?: { description?: string }
 }
 
@@ -145,6 +196,37 @@ function cleanPhone(value: string) {
 function compactJson(value: unknown) {
   if (!value) return ''
   return JSON.stringify(value)
+}
+
+function toJsonValue(value: unknown): JsonValue {
+  if (value === null) {
+    return null
+  }
+
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return value
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => toJsonValue(item))
+  }
+
+  if (typeof value === 'object') {
+    const output: JsonObject = {}
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      output[key] = toJsonValue(item)
+    }
+
+    return output
+  }
+
+  return String(value)
+}
+
+function asGoogleLocation(value: JsonValue | null | undefined): GoogleLocation | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as GoogleLocation
+    : undefined
 }
 
 function getGoogleAddress(location: GoogleLocation) {
@@ -243,7 +325,7 @@ function getSupabase() {
     throw new Error('Configure SUPABASE_SERVICE_ROLE_KEY e VITE_SUPABASE_URL na Vercel.')
   }
 
-  return createClient(supabaseUrl, supabaseServiceKey, { auth: { persistSession: false } })
+  return createClient<GoogleBusinessDatabase>(supabaseUrl, supabaseServiceKey, { auth: { persistSession: false } })
 }
 
 function assertGoogleEnv() {
@@ -270,7 +352,7 @@ async function requireUser(req: VercelRequest) {
 }
 
 async function ensureOrganizationAccess(
-  supabase: ReturnType<typeof createClient>,
+  supabase: GoogleSupabaseClient,
   userId: string,
   organizationId: string,
 ) {
@@ -288,7 +370,7 @@ async function ensureOrganizationAccess(
       .maybeSingle(),
   ])
 
-  if (role?.role !== 'admin' && !member) {
+  if ((role?.role ?? '') !== 'admin' && !member) {
     throw new Error('Voce nao tem acesso a esta empresa.')
   }
 }
@@ -311,7 +393,7 @@ async function googleFetch<T>(url: string, accessToken: string, options: Request
   return result
 }
 
-async function getConnection(supabase: ReturnType<typeof createClient>, organizationId: string) {
+async function getConnection(supabase: GoogleSupabaseClient, organizationId: string) {
   const { data, error } = await supabase
     .from('accountant_google_connections')
     .select('*')
@@ -325,7 +407,7 @@ async function getConnection(supabase: ReturnType<typeof createClient>, organiza
   return (data ?? null) as ConnectionRow | null
 }
 
-async function getValidAccessToken(supabase: ReturnType<typeof createClient>, connection: ConnectionRow) {
+async function getValidAccessToken(supabase: GoogleSupabaseClient, connection: ConnectionRow) {
   assertGoogleEnv()
 
   if (connection.access_token && new Date(connection.token_expires_at).getTime() > Date.now() + 60_000) {
@@ -369,7 +451,7 @@ async function getValidAccessToken(supabase: ReturnType<typeof createClient>, co
   return tokenData.access_token
 }
 
-async function loadSettings(supabase: ReturnType<typeof createClient>, organizationId: string) {
+async function loadSettings(supabase: GoogleSupabaseClient, organizationId: string) {
   const { data, error } = await supabase
     .from('company_settings')
     .select('company_name, phone, whatsapp, cep, address, address_complement, neighborhood, city, state, website, opening_hours, business_description')
@@ -380,7 +462,7 @@ async function loadSettings(supabase: ReturnType<typeof createClient>, organizat
   return (data ?? null) as CompanySettingsRow | null
 }
 
-async function loadStatus(supabase: ReturnType<typeof createClient>, organizationId: string) {
+async function loadStatus(supabase: GoogleSupabaseClient, organizationId: string) {
   const [connectionResult, locationsResult, logsResult, settings] = await Promise.all([
     getConnection(supabase, organizationId),
     supabase
@@ -417,7 +499,7 @@ async function loadStatus(supabase: ReturnType<typeof createClient>, organizatio
       errorMessage: log.error_message ?? '',
       createdAt: log.created_at,
     })),
-    comparison: buildComparison(settings, selected?.google_payload as GoogleLocation | undefined),
+    comparison: buildComparison(settings, asGoogleLocation(selected?.google_payload)),
   }
 }
 
@@ -555,7 +637,7 @@ async function handleLocations(req: VercelRequest, res: VercelResponse) {
         phone: location.phoneNumbers?.primaryPhone ?? '',
         website: location.websiteUri ?? '',
         sync_status: 'Pendente',
-        google_payload: location,
+        google_payload: toJsonValue(location),
         last_checked_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       },
@@ -619,7 +701,7 @@ async function handleCheck(req: VercelRequest, res: VercelResponse) {
       address: getGoogleAddress(googleLocation),
       phone: googleLocation.phoneNumbers?.primaryPhone ?? '',
       website: googleLocation.websiteUri ?? '',
-      google_payload: googleLocation,
+      google_payload: toJsonValue(googleLocation),
       sync_status: hasOutdated ? 'Google desatualizado' : 'Atualizado',
       last_checked_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -633,17 +715,22 @@ async function handleCheck(req: VercelRequest, res: VercelResponse) {
     user_id: user.id,
     user_email: user.email ?? '',
     fields_sent: [],
-    old_values: googleLocation,
-    new_values: settings ?? {},
+    old_values: toJsonValue(googleLocation),
+    new_values: toJsonValue(settings ?? {}),
     status: hasOutdated ? 'Desatualizado' : 'Atualizado',
   })
 
   return res.status(200).json({ ok: true, ...(await loadStatus(supabase, organizationId)) })
 }
 
-function tryParseJson(text: string) {
+function tryParseJson(text: string): JsonValue | null {
   try {
-    return text ? JSON.parse(text) as Record<string, unknown> : null
+    if (!text) {
+      return null
+    }
+
+    const parsed: unknown = JSON.parse(text)
+    return toJsonValue(parsed)
   } catch {
     return null
   }
@@ -652,7 +739,7 @@ function tryParseJson(text: string) {
 function buildPatchPayload(settings: CompanySettingsRow | null, comparison: ComparisonRow[]) {
   const changed = comparison.filter((row) => row.status === 'Desatualizado' && row.googleField)
   const updateMask = new Set<string>()
-  const body: Record<string, unknown> = {}
+  const body: JsonObject = {}
 
   for (const row of changed) {
     if (row.googleField === 'title') {
@@ -719,7 +806,7 @@ async function handleSync(req: VercelRequest, res: VercelResponse) {
   if (!selectedLocation) throw new Error('Selecione qual empresa do Google deseja vincular.')
 
   const settings = await loadSettings(supabase, organizationId)
-  const comparison = buildComparison(settings, selectedLocation.google_payload as GoogleLocation)
+  const comparison = buildComparison(settings, asGoogleLocation(selectedLocation.google_payload))
   const patch = buildPatchPayload(settings, comparison)
 
   if (!patch.fields.length) {
@@ -746,7 +833,7 @@ async function handleSync(req: VercelRequest, res: VercelResponse) {
     await supabase
       .from('accountant_google_locations')
       .update({
-        google_payload: updatedLocation,
+        google_payload: toJsonValue(updatedLocation),
         sync_status: 'Pendente de analise',
         last_synced_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),

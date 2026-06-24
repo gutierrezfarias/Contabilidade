@@ -149,6 +149,31 @@ public sealed class FiscalReadinessNcmEnrichmentTests
     }
 
     [Fact]
+    public void Backend_ncm_import_rejects_unauthenticated_requests_before_content_type_validation()
+    {
+        var program = Normalize(ReadFile("backend", "nfe-api", "Program.cs"));
+
+        Assert.Contains("path.equals(/api/reference-data/ncm/import-file", program);
+        Assert.Contains("headers.authorization.tostring()", program);
+        Assert.Contains("statuscodes.status401unauthorized", program);
+        Assert.DoesNotContain(".accepts<iformfile>(multipart/form-data)", program);
+    }
+
+    [Fact]
+    public void Backend_ncm_sync_and_import_require_platform_admin_before_global_catalog_writes()
+    {
+        var program = Normalize(ReadFile("backend", "nfe-api", "Program.cs"));
+        var nfeRepository = Normalize(ReadFile("backend", "nfe-api", "Services", "SupabaseNfeRepository.cs"));
+        var forbiddenException = Normalize(ReadFile("backend", "nfe-api", "Services", "ForbiddenAccessException.cs"));
+
+        Assert.Contains("ensureplatformadminasync(userid", program);
+        Assert.Contains("statuscodes.status403forbidden", program);
+        Assert.Contains("public async task ensureplatformadminasync", nfeRepository);
+        Assert.Contains("user_roles?select=role", nfeRepository);
+        Assert.Contains("forbiddenaccessexception", forbiddenException);
+    }
+
+    [Fact]
     public void Backend_standardizes_ncm_content_type_errors()
     {
         var service = Normalize(ReadFile("backend", "nfe-api", "Services", "NcmCatalogService.cs"));
@@ -159,6 +184,19 @@ public sealed class FiscalReadinessNcmEnrichmentTests
         Assert.Contains("application/octet-stream", service);
         Assert.Contains("ncm_file_signature_invalid", service);
         Assert.Contains("ncm_source_html_unexpected", service);
+    }
+
+    [Fact]
+    public void Google_business_api_uses_explicit_supabase_database_types_for_vercel_build()
+    {
+        var googleBusiness = Normalize(ReadFile("api", "google-business.ts"));
+
+        Assert.Contains("type googlebusinessdatabase", googleBusiness);
+        Assert.Contains("type googlesupabaseclient", googleBusiness);
+        Assert.Contains("createclient<googlebusinessdatabase>", googleBusiness);
+        Assert.DoesNotContain("returntype<typeof createclient>", googleBusiness);
+        Assert.DoesNotContain("@ts-ignore", googleBusiness);
+        Assert.DoesNotContain("@ts-nocheck", googleBusiness);
     }
 
     private static string Normalize(string value)

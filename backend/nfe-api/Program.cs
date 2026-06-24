@@ -61,6 +61,19 @@ var app = builder.Build();
 
 app.UseCors();
 
+app.Use(async (context, next) =>
+{
+    if (HttpMethods.IsPost(context.Request.Method)
+        && context.Request.Path.Equals("/api/reference-data/ncm/import-file", StringComparison.OrdinalIgnoreCase)
+        && string.IsNullOrWhiteSpace(context.Request.Headers.Authorization.ToString()))
+    {
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        return;
+    }
+
+    await next();
+});
+
 app.MapGet("/health", () => Results.Ok(new { ok = true, service = "CONT HUB NF-e API" }));
 
 app.MapGet("/api/nfe/{id}", async (
@@ -766,6 +779,7 @@ app.MapPost("/api/reference-data/ncm/sync", async (
         var userId = await nfeRepository.RequireUserAsync(
             httpContext.Request.Headers.Authorization.ToString(),
             cancellationToken);
+        await nfeRepository.EnsurePlatformAdminAsync(userId, cancellationToken);
 
         var result = await ncmService.SyncAsync(userId, cancellationToken);
         return result.Success ? Results.Ok(result) : Results.BadRequest(result);
@@ -773,6 +787,10 @@ app.MapPost("/api/reference-data/ncm/sync", async (
     catch (UnauthorizedAccessException)
     {
         return Results.Unauthorized();
+    }
+    catch (ForbiddenAccessException)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
     }
     catch (Exception error)
     {
@@ -791,6 +809,7 @@ app.MapPost("/api/reference-data/ncm/import-file", async (
         var userId = await nfeRepository.RequireUserAsync(
             httpContext.Request.Headers.Authorization.ToString(),
             cancellationToken);
+        await nfeRepository.EnsurePlatformAdminAsync(userId, cancellationToken);
 
         if (!httpContext.Request.HasFormContentType)
         {
@@ -819,6 +838,10 @@ app.MapPost("/api/reference-data/ncm/import-file", async (
     {
         return Results.Unauthorized();
     }
+    catch (ForbiddenAccessException)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
     catch (NcmCatalogImportException error)
     {
         return Results.Json(
@@ -836,7 +859,7 @@ app.MapPost("/api/reference-data/ncm/import-file", async (
     {
         return Results.BadRequest(new { ok = false, error = error.Message });
     }
-}).Accepts<IFormFile>("multipart/form-data");
+});
 
 app.MapGet("/api/accounting-integrations", async (
     string organizationId,
