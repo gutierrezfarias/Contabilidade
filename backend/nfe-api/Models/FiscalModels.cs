@@ -5,11 +5,19 @@ namespace ContHub.NfeApi.Models;
 public sealed record NcmCatalogItem
 {
     public string Code { get; init; } = "";
+    public string NormalizedCode { get; init; } = "";
     public string FormattedCode { get; init; } = "";
     public string Description { get; init; } = "";
     public DateOnly? StartDate { get; init; }
     public DateOnly? EndDate { get; init; }
     public bool IsActive { get; init; } = true;
+    public string LegalAct { get; init; } = "";
+    public string LegalActNumber { get; init; } = "";
+    public string LegalActYear { get; init; } = "";
+    public int HierarchyLevel { get; init; }
+    public string Source { get; init; } = "";
+    public string SourceVersion { get; init; } = "";
+    public DateTimeOffset? ImportedAt { get; init; }
     public DateTimeOffset? SourceUpdatedAt { get; init; }
 }
 
@@ -18,10 +26,14 @@ public sealed record NcmSyncResult
     public bool Success { get; init; }
     public string Status { get; init; } = "";
     public string Message { get; init; } = "";
+    public string Code { get; init; } = "";
+    public string Detail { get; init; } = "";
+    public string ReceivedContentType { get; init; } = "";
     public int TotalCodes { get; init; }
     public int InsertedCodes { get; init; }
     public int UpdatedCodes { get; init; }
     public int DeactivatedCodes { get; init; }
+    public int RejectedCodes { get; init; }
     public string JobId { get; init; } = "";
 }
 
@@ -32,6 +44,10 @@ public sealed record NcmSyncStatus
     public int InsertedCodes { get; init; }
     public int UpdatedCodes { get; init; }
     public int DeactivatedCodes { get; init; }
+    public int RejectedCodes { get; init; }
+    public string Source { get; init; } = "";
+    public string SourceVersion { get; init; } = "";
+    public int DurationMs { get; init; }
     public string ErrorMessage { get; init; } = "";
     public string StartedAt { get; init; } = "";
     public string FinishedAt { get; init; } = "";

@@ -1,5 +1,6 @@
 /// <reference types="node" />
 
+import { Buffer } from 'node:buffer'
 import process from 'node:process'
 
 export type VercelRequest = {
@@ -38,6 +39,15 @@ function backendBaseUrl() {
 
 function statusForProxyError(error: unknown) {
   return error instanceof Error && error.message.includes('SEFAZ_BACKEND_URL') ? 500 : 400
+}
+
+async function readRawBody(req: VercelRequest) {
+  const chunks: Buffer[] = []
+  for await (const chunk of req as unknown as AsyncIterable<Buffer | Uint8Array | string>) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+  }
+
+  return Buffer.concat(chunks)
 }
 
 export async function proxyNfePost(req: VercelRequest, res: VercelResponse, path: string) {
@@ -98,6 +108,54 @@ export async function proxyFiscalBackend(
         ...(syncRunId ? { 'x-sync-run-id': syncRunId } : {}),
       },
       body: method === 'GET' ? undefined : JSON.stringify(parseBody(req.body)),
+    })
+    const result = (await response.json().catch(() => ({}))) as Record<string, unknown>
+
+    return res.status(response.status).json(result)
+  } catch (error) {
+    return res.status(statusForProxyError(error)).json({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Nao foi possivel chamar o backend fiscal.',
+    })
+  }
+}
+
+export async function proxyMultipartBackend(
+  req: VercelRequest,
+  res: VercelResponse,
+  path: string,
+  allowedMethods: string[] = ['POST'],
+) {
+  const method = (req.method ?? 'GET').toUpperCase()
+  if (!allowedMethods.includes(method)) {
+    return res.status(405).json({ ok: false, error: 'Method not allowed' })
+  }
+
+  try {
+    const authorization = getHeader(req, 'authorization')
+    if (!authorization) {
+      return res.status(401).json({ ok: false, error: 'Login obrigatorio para importar dados fiscais.' })
+    }
+
+    const contentType = getHeader(req, 'content-type')
+    if (!contentType.toLowerCase().includes('multipart/form-data')) {
+      return res.status(415).json({
+        ok: false,
+        success: false,
+        code: 'NCM_MULTIPART_REQUIRED',
+        detail: 'Envie a planilha NCM em multipart/form-data.',
+        receivedContentType: contentType,
+      })
+    }
+
+    const body = await readRawBody(req)
+    const response = await fetch(`${backendBaseUrl()}${path}`, {
+      method,
+      headers: {
+        authorization,
+        'content-type': contentType,
+      },
+      body,
     })
     const result = (await response.json().catch(() => ({}))) as Record<string, unknown>
 

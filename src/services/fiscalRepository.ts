@@ -48,6 +48,12 @@ function mapProfile(row: Record<string, unknown>): FiscalCompanyProfile {
     fiscalNotes: String(row.fiscal_notes ?? ''),
     approvalStatus: String(row.approval_status ?? 'Incompleto') as FiscalCompanyProfile['approvalStatus'],
     active: Boolean(row.active),
+    confirmedAt: String(row.confirmed_at ?? ''),
+    confirmedBy: String(row.confirmed_by ?? ''),
+    dataOrigin: String(row.data_origin ?? ''),
+    ibgeResolvedAt: String(row.ibge_resolved_at ?? ''),
+    ibgeSource: String(row.ibge_source ?? ''),
+    lastVerifiedAt: String(row.last_verified_at ?? ''),
   }
 }
 
@@ -235,6 +241,10 @@ export async function upsertFiscalCompanyProfile(
         fiscal_notes: profile.fiscalNotes,
         approval_status: profile.approvalStatus,
         active: profile.active,
+        data_origin: profile.dataOrigin || 'manual',
+        ibge_resolved_at: profile.ibgeResolvedAt || null,
+        ibge_source: profile.ibgeSource || null,
+        last_verified_at: profile.lastVerifiedAt || null,
         created_by: userId,
         updated_by: userId,
         updated_at: new Date().toISOString(),
@@ -246,6 +256,42 @@ export async function upsertFiscalCompanyProfile(
 
   fiscalError(error, 'Nao foi possivel salvar o perfil fiscal.')
   return mapProfile(data)
+}
+
+export async function recordFiscalFieldSources(
+  organizationId: string,
+  clientId: string,
+  profileId: string,
+  sources: Array<{
+    fieldName: string
+    source: string
+    oldValue: string
+    newValue: string
+    confirmationStatus?: string
+  }>,
+) {
+  if (!sources.length) return
+
+  const userId = await currentUserId()
+  const { error } = await supabase.from('fiscal_field_sources').upsert(
+    sources.map((source) => ({
+      client_id: clientId,
+      confirmed_at: new Date().toISOString(),
+      confirmed_by: userId,
+      field_name: source.fieldName,
+      obtained_at: new Date().toISOString(),
+      organization_id: organizationId,
+      previous_value: source.oldValue,
+      profile_id: profileId || null,
+      source: source.source,
+      status: source.confirmationStatus ?? 'confirmed',
+      updated_at: new Date().toISOString(),
+      value: source.newValue,
+    })),
+    { onConflict: 'organization_id,client_id,field_name,source' },
+  )
+
+  fiscalError(error, 'Perfil salvo, mas nao foi possivel registrar a origem dos campos.')
 }
 
 export async function approveFiscalCompanyProfile(profileId: string, reason = '') {

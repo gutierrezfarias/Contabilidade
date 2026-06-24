@@ -29,13 +29,43 @@ async function requestFiscal<T>(path: string, options: RequestInit = {}) {
     },
   })
   const result = (await response.json().catch(() => ({}))) as T & {
+    code?: string
+    detail?: string
     error?: string
+    message?: string
     ok?: boolean
     success?: boolean
   }
 
   if (!response.ok || result.ok === false || result.success === false) {
-    throw new Error(result.error ?? 'Nao foi possivel executar a operacao fiscal.')
+    throw new Error(result.detail ?? result.error ?? result.message ?? 'Nao foi possivel executar a operacao fiscal.')
+  }
+
+  return result
+}
+
+async function requestFiscalFile<T>(path: string, file: File) {
+  const token = await getAccessToken()
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await fetch(path, {
+    body: formData,
+    headers: {
+      authorization: `Bearer ${token}`,
+    },
+    method: 'POST',
+  })
+  const result = (await response.json().catch(() => ({}))) as T & {
+    detail?: string
+    error?: string
+    message?: string
+    ok?: boolean
+    success?: boolean
+  }
+
+  if (!response.ok || result.ok === false || result.success === false) {
+    throw new Error(result.detail ?? result.error ?? result.message ?? 'Nao foi possivel importar o arquivo fiscal.')
   }
 
   return result
@@ -67,6 +97,10 @@ export function syncNcmCatalog() {
   return requestFiscal<NcmSyncResult>('/api/reference-data/ncm/sync', {
     method: 'POST',
   })
+}
+
+export function importNcmCatalogFile(file: File) {
+  return requestFiscalFile<NcmSyncResult>('/api/reference-data/ncm/import-file', file)
 }
 
 export function previewNfeTaxes(input: NfeTaxPreviewRequest) {

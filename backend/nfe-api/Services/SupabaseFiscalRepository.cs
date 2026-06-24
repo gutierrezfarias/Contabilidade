@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using ContHub.NfeApi.Models;
@@ -20,13 +21,35 @@ public sealed class SupabaseFiscalRepository(IHttpClientFactory httpClientFactor
         EnsureConfigured();
 
         var normalized = NfeText.Digits(query);
+        var searchText = NormalizeSearchText(query);
+        var trimmed = query.Trim();
         var safeLimit = Math.Clamp(limit, 1, 50);
-        var path = string.IsNullOrWhiteSpace(normalized)
-            ? $"ncm_catalog?select=*&is_active=eq.true&description=ilike.*{Uri.EscapeDataString(query.Trim())}*&limit={safeLimit}&order=code.asc"
-            : $"ncm_catalog?select=*&is_active=eq.true&or=(code.ilike.*{Uri.EscapeDataString(normalized)}*,formatted_code.ilike.*{Uri.EscapeDataString(query.Trim())}*)&limit={safeLimit}&order=code.asc";
+        var filters = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(normalized))
+        {
+            var escapedDigits = Uri.EscapeDataString(normalized);
+            filters.Add($"normalized_code.ilike.*{escapedDigits}*");
+            filters.Add($"code.ilike.*{escapedDigits}*");
+            filters.Add($"formatted_code.ilike.*{Uri.EscapeDataString(trimmed)}*");
+        }
+
+        if (!string.IsNullOrWhiteSpace(searchText))
+        {
+            filters.Add($"description_search.ilike.*{Uri.EscapeDataString(searchText)}*");
+            filters.Add($"description.ilike.*{Uri.EscapeDataString(trimmed)}*");
+        }
+
+        var path = filters.Count == 0
+            ? $"ncm_catalog?select=*&is_active=eq.true&limit={safeLimit}&order=code.asc"
+            : $"ncm_catalog?select=*&is_active=eq.true&or=({string.Join(",", filters)})&limit={safeLimit}&order=code.asc";
 
         var rows = await GetArrayAsync(path, cancellationToken);
-        return rows.Select(MapNcm).ToList();
+        return rows
+            .Select(MapNcm)
+            .OrderBy(item => NcmSearchScore(item, normalized, searchText))
+            .ThenBy(item => item.NormalizedCode)
+            .ToList();
     }
 
     public async Task<NcmCatalogItem?> GetNcmAsync(string code, CancellationToken cancellationToken)
@@ -38,7 +61,7 @@ public sealed class SupabaseFiscalRepository(IHttpClientFactory httpClientFactor
         }
 
         var rows = await GetArrayAsync(
-            $"ncm_catalog?select=*&code=eq.{Uri.EscapeDataString(normalized)}&limit=1",
+            $"ncm_catalog?select=*&normalized_code=eq.{Uri.EscapeDataString(normalized)}&limit=1",
             cancellationToken);
 
         return rows.Count == 0 ? null : MapNcm(rows[0]);
@@ -60,7 +83,11 @@ public sealed class SupabaseFiscalRepository(IHttpClientFactory httpClientFactor
             StartedAt = FiscalJson.Get(rows[0], "started_at"),
             Status = FiscalJson.Get(rows[0], "status", "Pendente"),
             TotalCodes = FiscalJson.GetInt(rows[0], "total_codes"),
-            UpdatedCodes = FiscalJson.GetInt(rows[0], "updated_codes")
+            UpdatedCodes = FiscalJson.GetInt(rows[0], "updated_codes"),
+            RejectedCodes = FiscalJson.GetInt(rows[0], "rejected_codes"),
+            Source = FiscalJson.Get(rows[0], "source"),
+            SourceVersion = FiscalJson.Get(rows[0], "source_version"),
+            DurationMs = FiscalJson.GetInt(rows[0], "duration_ms")
         };
     }
 
@@ -85,7 +112,11 @@ public sealed class SupabaseFiscalRepository(IHttpClientFactory httpClientFactor
         int insertedCodes,
         int updatedCodes,
         int deactivatedCodes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int rejectedCodes = 0,
+        string sourceVersion = "",
+        string source = "Siscomex",
+        int durationMs = 0)
     {
         await PatchAsync(
             $"ncm_sync_jobs?id=eq.{Uri.EscapeDataString(jobId)}",
@@ -94,6 +125,10 @@ public sealed class SupabaseFiscalRepository(IHttpClientFactory httpClientFactor
                 deactivated_codes = deactivatedCodes,
                 finished_at = DateTimeOffset.UtcNow,
                 inserted_codes = insertedCodes,
+                rejected_codes = rejectedCodes,
+                source,
+                source_version = sourceVersion,
+                duration_ms = durationMs,
                 status = "Concluido",
                 total_codes = totalCodes,
                 updated_codes = updatedCodes
@@ -119,15 +154,23 @@ public sealed class SupabaseFiscalRepository(IHttpClientFactory httpClientFactor
         foreach (var chunk in items.Chunk(500))
         {
             await PostAsync(
-                "ncm_catalog?on_conflict=code",
+                "ncm_catalog?on_conflict=normalized_code",
                 chunk.Select(item => new
                 {
                     code = item.Code,
+                    normalized_code = item.NormalizedCode,
                     description = item.Description,
+                    description_search = NormalizeSearchText(item.Description),
                     end_date = item.EndDate?.ToString("yyyy-MM-dd"),
                     formatted_code = item.FormattedCode,
+                    hierarchy_level = item.HierarchyLevel,
+                    imported_at = item.ImportedAt,
                     is_active = item.IsActive,
-                    source = "Siscomex",
+                    legal_act = item.LegalAct,
+                    legal_act_number = item.LegalActNumber,
+                    legal_act_year = item.LegalActYear,
+                    source = string.IsNullOrWhiteSpace(item.Source) ? "Siscomex" : item.Source,
+                    source_version = item.SourceVersion,
                     source_updated_at = item.SourceUpdatedAt,
                     start_date = item.StartDate?.ToString("yyyy-MM-dd"),
                     updated_at = DateTimeOffset.UtcNow
@@ -364,6 +407,62 @@ public sealed class SupabaseFiscalRepository(IHttpClientFactory httpClientFactor
     private static StringContent JsonBody(object body) =>
         new(JsonSerializer.Serialize(body, NfeText.JsonOptions), Encoding.UTF8, "application/json");
 
+    private static int NcmSearchScore(NcmCatalogItem item, string digits, string searchText)
+    {
+        var normalizedCode = string.IsNullOrWhiteSpace(item.NormalizedCode)
+            ? NfeText.Digits(item.Code)
+            : item.NormalizedCode;
+
+        if (!string.IsNullOrWhiteSpace(digits))
+        {
+            if (normalizedCode == digits)
+            {
+                return 0;
+            }
+
+            if (normalizedCode.StartsWith(digits, StringComparison.Ordinal))
+            {
+                return 1;
+            }
+        }
+
+        var description = NormalizeSearchText(item.Description);
+        if (!string.IsNullOrWhiteSpace(searchText) && description.Contains(searchText, StringComparison.Ordinal))
+        {
+            return 2;
+        }
+
+        return 3;
+    }
+
+    private static string NormalizeSearchText(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "";
+        }
+
+        var decomposed = value.Normalize(NormalizationForm.FormD);
+        var builder = new StringBuilder(decomposed.Length);
+
+        foreach (var character in decomposed)
+        {
+            var category = CharUnicodeInfo.GetUnicodeCategory(character);
+            if (category == UnicodeCategory.NonSpacingMark)
+            {
+                continue;
+            }
+
+            builder.Append(char.IsLetterOrDigit(character) ? char.ToLowerInvariant(character) : ' ');
+        }
+
+        return string.Join(
+            " ",
+            builder.ToString()
+                .Normalize(NormalizationForm.FormC)
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries));
+    }
+
     private void EnsureConfigured()
     {
         if (string.IsNullOrWhiteSpace(_supabaseUrl) || string.IsNullOrWhiteSpace(_serviceKey))
@@ -380,7 +479,17 @@ public sealed class SupabaseFiscalRepository(IHttpClientFactory httpClientFactor
             Description = FiscalJson.Get(row, "description"),
             EndDate = FiscalJson.GetDate(row, "end_date"),
             FormattedCode = FiscalJson.Get(row, "formatted_code"),
+            HierarchyLevel = FiscalJson.GetInt(row, "hierarchy_level"),
+            ImportedAt = DateTimeOffset.TryParse(FiscalJson.Get(row, "imported_at"), out var importedAt)
+                ? importedAt
+                : null,
             IsActive = FiscalJson.GetBool(row, "is_active"),
+            LegalAct = FiscalJson.Get(row, "legal_act"),
+            LegalActNumber = FiscalJson.Get(row, "legal_act_number"),
+            LegalActYear = FiscalJson.Get(row, "legal_act_year"),
+            NormalizedCode = FiscalJson.Get(row, "normalized_code"),
+            Source = FiscalJson.Get(row, "source"),
+            SourceVersion = FiscalJson.Get(row, "source_version"),
             SourceUpdatedAt = DateTimeOffset.TryParse(FiscalJson.Get(row, "source_updated_at"), out var sourceDate)
                 ? sourceDate
                 : null,

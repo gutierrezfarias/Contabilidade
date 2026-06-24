@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { PeriodFilter } from '../../components/accounting/PeriodFilter'
 import { StatusBadge } from '../../components/accounting/StatusBadge'
 import { ImportarDocumentoCliente } from '../../components/clientes/ImportarDocumentoCliente'
@@ -193,6 +193,7 @@ function readFileAsDataUrl(file: File) {
 }
 
 export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementProps) {
+  const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const clientFormRef = useRef<HTMLFormElement | null>(null)
   const [tab, setTab] = useState<ManagementTab>(initialTab)
@@ -203,6 +204,12 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
   const [certificates, setCertificates] = useState<DigitalCertificate[]>([])
   const [selectedClientId, setSelectedClientId] = useState('')
   const [form, setForm] = useState<ClientForm>(blankClient)
+  const [isClientFormOpen, setIsClientFormOpen] = useState(false)
+  const [clientSearch, setClientSearch] = useState('')
+  const [clientStatusFilter, setClientStatusFilter] = useState<'todos' | 'ativos' | 'inativos'>('todos')
+  const [clientTaxRegimeFilter, setClientTaxRegimeFilter] = useState<ClientTaxRegime | 'todos'>('todos')
+  const [clientCompanySizeFilter, setClientCompanySizeFilter] = useState<ClientCompanySize | 'todos'>('todos')
+  const [clientMonthlyFilter, setClientMonthlyFilter] = useState<'todos' | 'mensalistas' | 'avulsos'>('todos')
   const [pendingImportedFile, setPendingImportedFile] = useState<ImportedClientDocumentFile | null>(null)
   const [documentsClientId, setDocumentsClientId] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -241,17 +248,70 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
     setPage: setClientsPage,
     setPageSize: setClientsPageSize,
   } = usePagination({ initialPageSize: 10 })
+  const filteredClients = useMemo(() => {
+    const search = clientSearch.trim().toLowerCase()
+
+    return clients.filter((client) => {
+      const matchesSearch =
+        !search ||
+        [
+          client.companyName,
+          client.cnpj,
+          client.phone,
+          client.email,
+          client.city,
+          client.state,
+          client.neighborhood,
+          client.taxRegime,
+          client.companySize,
+        ]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(search))
+
+      const matchesStatus =
+        clientStatusFilter === 'todos' ||
+        (clientStatusFilter === 'ativos' && client.active) ||
+        (clientStatusFilter === 'inativos' && !client.active)
+
+      const matchesTaxRegime =
+        clientTaxRegimeFilter === 'todos' || client.taxRegime === clientTaxRegimeFilter
+
+      const matchesCompanySize =
+        clientCompanySizeFilter === 'todos' || client.companySize === clientCompanySizeFilter
+
+      const matchesMonthly =
+        clientMonthlyFilter === 'todos' ||
+        (clientMonthlyFilter === 'mensalistas' && client.isMonthly) ||
+        (clientMonthlyFilter === 'avulsos' && !client.isMonthly)
+
+      return matchesSearch && matchesStatus && matchesTaxRegime && matchesCompanySize && matchesMonthly
+    })
+  }, [clientCompanySizeFilter, clientMonthlyFilter, clientSearch, clientStatusFilter, clientTaxRegimeFilter, clients])
+
   const paginatedClients = useMemo(() => {
     const start = (clientsPage - 1) * clientsPageSize
-    return clients.slice(start, start + clientsPageSize)
-  }, [clients, clientsPage, clientsPageSize])
-  const clientsTotalPages = Math.max(Math.ceil(clients.length / clientsPageSize), 1)
+    return filteredClients.slice(start, start + clientsPageSize)
+  }, [clientsPage, clientsPageSize, filteredClients])
+  const clientsTotalPages = Math.max(Math.ceil(filteredClients.length / clientsPageSize), 1)
+  const preservedSearch = useMemo(() => {
+    const text = searchParams.toString()
+    return text ? `?${text}` : ''
+  }, [searchParams])
 
   useEffect(() => {
     if (clientsPage <= clientsTotalPages) return
     const timeoutId = window.setTimeout(() => setClientsPage(clientsTotalPages), 0)
     return () => window.clearTimeout(timeoutId)
   }, [clientsPage, clientsTotalPages, setClientsPage])
+
+  useEffect(() => {
+    const requestedTab = searchParams.get('tab') as ManagementTab | null
+    if (!requestedTab || !(['cadastros', 'pagamentos', 'certificados'] as ManagementTab[]).includes(requestedTab)) return
+    if (requestedTab === tab) return
+
+    const timeoutId = window.setTimeout(() => setTab(requestedTab), 0)
+    return () => window.clearTimeout(timeoutId)
+  }, [searchParams, tab])
 
   async function reloadClients(targetOrganizationId: string | null) {
     setClients(await listAccountingClients(targetOrganizationId))
@@ -327,6 +387,26 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
     setError('')
   }
 
+  function openNewClientForm() {
+    setTab('cadastros')
+    setEditingId(null)
+    setForm(blankClient)
+    setPendingImportedFile(null)
+    setIsClientFormOpen(true)
+    setFeedback('')
+    setError('')
+    window.setTimeout(() => {
+      clientFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, 0)
+  }
+
+  function closeClientForm() {
+    setIsClientFormOpen(false)
+    setEditingId(null)
+    setForm(blankClient)
+    setPendingImportedFile(null)
+  }
+
   async function handleLogoUpload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     if (!file) return
@@ -391,6 +471,8 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
   }
 
   function applyImportedDocument(imported: ImportedClientDocument, file: ImportedClientDocumentFile) {
+    setTab('cadastros')
+    setIsClientFormOpen(true)
     setForm((current) => ({
       ...current,
       address: imported.endereco || current.address,
@@ -491,6 +573,7 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
       setForm(blankClient)
       setEditingId(null)
       setPendingImportedFile(null)
+      setIsClientFormOpen(false)
       await reloadClients(organizationId)
       if (documentsClientId) {
         setClientDocuments(await listClientDocuments(documentsClientId))
@@ -503,8 +586,9 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
     }
   }
 
-  function editClient(client: AccountingClient) {
+  const editClient = useCallback((client: AccountingClient) => {
     setTab('cadastros')
+    setIsClientFormOpen(true)
     setEditingId(client.id)
     setForm({
       companyName: client.companyName,
@@ -535,7 +619,18 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
     window.setTimeout(() => {
       clientFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }, 0)
-  }
+  }, [setError, setFeedback])
+
+  useEffect(() => {
+    const editClientId = searchParams.get('editClient')
+    if (!editClientId || editingId === editClientId) return
+
+    const client = clients.find((item) => item.id === editClientId)
+    if (!client) return
+
+    const timeoutId = window.setTimeout(() => editClient(client), 0)
+    return () => window.clearTimeout(timeoutId)
+  }, [clients, editClient, editingId, searchParams])
 
   async function removeClient(clientId: string) {
     if (!window.confirm('Excluir este cliente e seus dados relacionados?')) return
@@ -543,6 +638,7 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
     try {
       await deleteAccountingClient(clientId)
       if (selectedClientId === clientId) setSelectedClientId('')
+      if (editingId === clientId) closeClientForm()
       await reloadClients(organizationId)
       setFeedback('Cliente excluido.')
     } catch (deleteError) {
@@ -555,6 +651,10 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
     setClientDocuments(await listClientDocuments(client.id))
     setFeedback(`Documentos vinculados: ${client.companyName}.`)
     setError('')
+  }
+
+  function openClientWorkspace(clientId: string) {
+    navigate(`/gestao-clientes/${clientId}${preservedSearch}`)
   }
 
   async function removeClientDocument(documentId: string) {
@@ -1024,7 +1124,112 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
 
       {tab === 'cadastros' && (
         <>
-        <div className="grid gap-6 xl:grid-cols-[1fr_1.1fr]">
+        <section className="mb-6 rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
+          <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-start">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-indigo-600">Carteira de clientes</p>
+              <h3 className="mt-2 text-2xl font-bold text-slate-900">Clientes cadastrados</h3>
+              <p className="mt-2 text-sm text-slate-500">
+                Use a lista como ponto de partida. Cadastro, edicao, importacao e documentos continuam disponiveis nas acoes.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <Button onClick={openNewClientForm} type="button">
+                Novo cliente
+              </Button>
+              <Button
+                onClick={() => downloadCsv('modelo-cadastro-clientes.csv', clientCsvTemplate)}
+                type="button"
+                variant="secondary"
+              >
+                Baixar CSV
+              </Button>
+            </div>
+          </div>
+          <div className="mt-6 grid gap-4 lg:grid-cols-[1.5fr_repeat(4,1fr)]">
+            <Input
+              id="client-search"
+              label="Buscar cliente"
+              onChange={(event) => {
+                setClientSearch(event.target.value)
+                setClientsPage(1)
+              }}
+              placeholder="Razao social, CNPJ, cidade, telefone..."
+              value={clientSearch}
+            />
+            <Select
+              id="client-status-filter"
+              label="Status"
+              onChange={(value) => {
+                setClientStatusFilter(value as typeof clientStatusFilter)
+                setClientsPage(1)
+              }}
+              value={clientStatusFilter}
+            >
+              <option value="todos">Todos</option>
+              <option value="ativos">Ativos</option>
+              <option value="inativos">Inativos</option>
+            </Select>
+            <Select
+              id="client-tax-filter"
+              label="Regime"
+              onChange={(value) => {
+                setClientTaxRegimeFilter(value as ClientTaxRegime | 'todos')
+                setClientsPage(1)
+              }}
+              value={clientTaxRegimeFilter}
+            >
+              <option value="todos">Todos</option>
+              {taxRegimeOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+            </Select>
+            <Select
+              id="client-size-filter"
+              label="Porte"
+              onChange={(value) => {
+                setClientCompanySizeFilter(value as ClientCompanySize | 'todos')
+                setClientsPage(1)
+              }}
+              value={clientCompanySizeFilter}
+            >
+              <option value="todos">Todos</option>
+              {companySizeOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+            </Select>
+            <Select
+              id="client-monthly-filter"
+              label="Mensalidade"
+              onChange={(value) => {
+                setClientMonthlyFilter(value as typeof clientMonthlyFilter)
+                setClientsPage(1)
+              }}
+              value={clientMonthlyFilter}
+            >
+              <option value="todos">Todos</option>
+              <option value="mensalistas">Mensalistas</option>
+              <option value="avulsos">Nao mensalistas</option>
+            </Select>
+          </div>
+          <div className="mt-5 grid gap-3 sm:grid-cols-4">
+            <div className="rounded-2xl bg-slate-50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Total</p>
+              <p className="mt-2 text-2xl font-bold text-slate-900">{clients.length}</p>
+            </div>
+            <div className="rounded-2xl bg-slate-50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Resultado</p>
+              <p className="mt-2 text-2xl font-bold text-indigo-700">{filteredClients.length}</p>
+            </div>
+            <div className="rounded-2xl bg-slate-50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Ativos</p>
+              <p className="mt-2 text-2xl font-bold text-emerald-700">{clients.filter((client) => client.active).length}</p>
+            </div>
+            <div className="rounded-2xl bg-slate-50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Mensalistas</p>
+              <p className="mt-2 text-2xl font-bold text-slate-900">{clients.filter((client) => client.isMonthly).length}</p>
+            </div>
+          </div>
+        </section>
+
+        <div className={isClientFormOpen ? 'grid gap-6 xl:grid-cols-[1fr_1.1fr]' : 'space-y-6'}>
+          {isClientFormOpen && (
           <form className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm" onSubmit={handleSaveClient} ref={clientFormRef}>
             <div className="mb-6 flex items-center justify-between gap-3">
               <div>
@@ -1037,11 +1242,8 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
                   </p>
                 )}
               </div>
-              <Button
-                onClick={() => downloadCsv('modelo-cadastro-clientes.csv', clientCsvTemplate)}
-                variant="secondary"
-              >
-                Baixar CSV
+              <Button onClick={closeClientForm} type="button" variant="secondary">
+                Fechar
               </Button>
             </div>
             <div className="space-y-4">
@@ -1170,9 +1372,15 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
               )}
             </div>
           </form>
+          )}
           <section className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
             <div className="mb-5 flex items-center justify-between gap-3">
-              <div><h3 className="text-lg font-semibold text-slate-900">Clientes cadastrados</h3><p className="text-sm text-slate-500">{clients.length} registro(s)</p></div>
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900">Lista de clientes</h3>
+                <p className="text-sm text-slate-500">
+                  {filteredClients.length} resultado(s) de {clients.length} registro(s)
+                </p>
+              </div>
               <div className="flex flex-wrap gap-3">
                 <ImportarDocumentoCliente onConfirm={applyImportedDocument} />
                 <label className={`inline-flex h-12 items-center justify-center rounded-xl bg-indigo-600 px-5 text-sm font-semibold text-white transition hover:bg-indigo-700 ${savingAction === 'clients-import' ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
@@ -1182,6 +1390,11 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
               </div>
             </div>
             {clients.length === 0 && <p className="py-10 text-center text-sm text-slate-500">Nenhum cliente cadastrado.</p>}
+            {clients.length > 0 && filteredClients.length === 0 && (
+              <p className="py-10 text-center text-sm text-slate-500">
+                Nenhum cliente encontrado com os filtros atuais.
+              </p>
+            )}
             <div className="space-y-3">
               {paginatedClients.map((client) => (
                 <div className={`rounded-xl border p-4 transition ${editingId === client.id ? 'border-indigo-300 bg-indigo-50/60 ring-2 ring-indigo-100' : 'border-slate-100 bg-white'}`} key={client.id}>
@@ -1191,7 +1404,13 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
                     )}
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <p className="font-semibold text-slate-900">{client.companyName}</p>
+                        <button
+                          className="font-semibold text-slate-900 transition hover:text-indigo-700"
+                          onClick={() => openClientWorkspace(client.id)}
+                          type="button"
+                        >
+                          {client.companyName}
+                        </button>
                         <span className={`rounded-full px-2 py-1 text-xs font-semibold ${client.isMonthly ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
                           {client.isMonthly ? `Mensalista ${formatCurrency.format(client.monthlyFee)}` : 'Nao mensalista'}
                         </span>
@@ -1215,6 +1434,9 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
                     </div>
                   </div>
                   <div className="mt-4 flex gap-4 text-sm font-semibold">
+                    <button className="text-indigo-600" onClick={() => openClientWorkspace(client.id)} type="button">
+                      Abrir
+                    </button>
                     <button className="text-indigo-600" onClick={() => editClient(client)} type="button">
                       {editingId === client.id ? 'Editando' : 'Editar'}
                     </button>
@@ -1232,7 +1454,7 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
               onPageSizeChange={setClientsPageSize}
               page={clientsPage}
               pageSize={clientsPageSize}
-              total={clients.length}
+              total={filteredClients.length}
               totalPages={clientsTotalPages}
             />
             {documentsClientId && (
@@ -1285,93 +1507,17 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
           </section>
         </div>
         <section className="mt-6 rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
-          <h3 className="text-lg font-semibold text-slate-900">Certificado digital do cliente</h3>
-          <p className="mt-2 text-sm text-amber-700">
-            Cadastre o certificado do cliente para liberar as telas fiscais. Para usar na SEFAZ, deixe o status como Ativo.
-          </p>
-          <form className="mt-5 grid gap-4 lg:grid-cols-3" onSubmit={handleSaveCertificate}>
-            <div className="lg:col-span-3">{renderCertificateGuide()}</div>
-            <Select id="quick-cert-client" label="Cliente" onChange={(value) => void selectCertificateClient(value)} value={selectedClientId}>
-              <option value="">Selecione...</option>
-              {clients.map((client) => <option key={client.id} value={client.id}>{client.companyName}</option>)}
-            </Select>
-            <Select id="quick-cert-type" label="Tipo" onChange={(value) => setCertificateType(value as CertificateType)} value={certificateType}>
-              {(['A1', 'A3', 'e-CNPJ', 'e-CPF'] as CertificateType[]).map((type) => <option key={type} value={type}>{type}</option>)}
-            </Select>
-            <Select id="quick-cert-status" label="Status" onChange={(value) => setCertificateStatus(value as DigitalCertificate['status'])} value={certificateStatus}>
-              {(['Pendente', 'Ativo', 'Expirado', 'Revogado'] as DigitalCertificate['status'][]).map((status) => <option key={status} value={status}>{status}</option>)}
-            </Select>
-            <Select id="quick-cert-env" label="Ambiente SEFAZ" onChange={(value) => setCertificateEnvironment(value as DigitalCertificate['environment'])} value={certificateEnvironment}>
-              <option value="homologacao">Homologacao</option>
-              <option value="producao">Producao</option>
-            </Select>
-            <Input id="quick-holder" label="Titular" onChange={(event) => setHolderName(event.target.value)} required value={holderName} />
-            <Input id="quick-tax-id" label="CPF/CNPJ do titular" onChange={(event) => setTaxId(event.target.value)} required value={taxId} />
-            <Input id="quick-valid-until" label="Validade" onChange={(event) => setValidUntil(event.target.value)} type="date" value={validUntil} />
-            <Input id="quick-serial-number" label="Numero de serie" onChange={(event) => setSerialNumber(event.target.value)} value={serialNumber} />
-            <Input id="quick-issuer" label="Autoridade emissora" onChange={(event) => setIssuer(event.target.value)} value={issuer} />
-            <Input id="quick-state-uf" label="UF SEFAZ" onChange={(event) => setStateUf(event.target.value.toUpperCase())} placeholder="SP" value={stateUf} />
-            <Input id="quick-municipal-code" label="Codigo municipal (NFS-e)" onChange={(event) => setMunicipalCode(event.target.value)} value={municipalCode} />
-            <Input id="quick-secure-reference" label="Referencia segura" onChange={(event) => setSecureReference(event.target.value)} placeholder="vault://..." value={secureReference} />
-            {isLoadingCertificateClient && (
-              <p className="lg:col-span-3 rounded-xl bg-indigo-50 p-3 text-sm font-medium text-indigo-700">
-                Carregando certificado atual do cliente...
+          <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
+            <div>
+              <h3 className="text-lg font-semibold text-slate-900">Certificados digitais</h3>
+              <p className="mt-2 text-sm text-slate-500">
+                O cadastro completo de PFX/P12, senha e servicos habilitados fica na aba Certificados.
               </p>
-            )}
-            {renderCertificatePasswordInput('quick-certificate-password')}
-            <div className="lg:col-span-3">{renderCertificateFileUpload()}</div>
-            {renderCertificateSaveShortcut('lg:col-span-3')}
-            <fieldset className="lg:col-span-3">
-              <legend className="mb-2 text-sm font-medium text-slate-700">Servicos habilitados</legend>
-              <div className="space-y-4">
-                {serviceGroups.map((group) => (
-                  <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4" key={group.name}>
-                    <p className="mb-3 text-sm font-semibold text-slate-900">{group.name}</p>
-                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                      {group.services.map((service) => (
-                        <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-600" key={service.code}>
-                          <input
-                            checked={enabledServices.includes(service.code)}
-                            className="mt-1"
-                            onChange={(event) =>
-                              setEnabledServices((current) =>
-                                event.target.checked
-                                  ? [...current, service.code]
-                                  : current.filter((item) => item !== service.code),
-                              )
-                            }
-                            type="checkbox"
-                          />
-                          <span>
-                            <span className="block font-semibold text-slate-800">{service.label}</span>
-                            <span className="mt-1 block text-xs text-slate-500">{service.description}</span>
-                          </span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </fieldset>
-            <div className="lg:col-span-3">
-              <div className="flex flex-col gap-3 sm:flex-row">
-                <Button className="flex-1" isLoading={savingAction === 'certificate'} type="submit">
-                  {savingAction === 'certificate'
-                    ? editingCertificateId
-                      ? 'Atualizando certificado...'
-                      : 'Salvando certificado...'
-                    : editingCertificateId
-                      ? 'Atualizar certificado digital'
-                      : 'Salvar certificado digital'}
-                </Button>
-                {editingCertificateId && (
-                  <Button className="flex-1" disabled={savingAction === 'certificate'} onClick={resetCertificateForm} type="button" variant="secondary">
-                    Cancelar edicao
-                  </Button>
-                )}
-              </div>
             </div>
-          </form>
+            <Button onClick={() => setTab('certificados')} type="button" variant="secondary">
+              Abrir certificados
+            </Button>
+          </div>
         </section>
         </>
       )}

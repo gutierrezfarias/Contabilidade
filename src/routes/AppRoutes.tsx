@@ -10,6 +10,7 @@ import { AppHome } from '../pages/apps/AppHome'
 import { PremiumApp } from '../pages/apps/PremiumApp'
 import { AccountingDocuments } from '../pages/accounting/AccountingDocuments'
 import { ClientManagement } from '../pages/accounting/ClientManagement'
+import { ClientWorkspace } from '../pages/accounting/ClientWorkspace'
 import { CnpjConsultation } from '../pages/accounting/CnpjConsultation'
 import { FiscalModule } from '../pages/accounting/FiscalModule'
 import { Integrations } from '../pages/accounting/Integrations'
@@ -92,6 +93,7 @@ export function AppRoutes() {
           <Route element={<PaidAppRoute applicationId="gestao-contabil"><AccountingClientAreaRoute /></PaidAppRoute>}>
             <Route element={<AccountingDashboardRoute />} path="/dashboard" />
             <Route element={<ClientManagement key="cadastros" />} path="/gestao-clientes" />
+            <Route element={<ClientWorkspace />} path="/gestao-clientes/:clientId" />
             <Route element={<CnpjConsultation />} path="/consulta-cnpj" />
             <Route element={<AccountingDocuments />} path="/documentos-contabeis" />
             <Route element={<ObligationsTaxes />} path="/obrigacoes-impostos" />

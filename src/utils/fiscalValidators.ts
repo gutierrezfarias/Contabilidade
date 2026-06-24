@@ -24,7 +24,9 @@ export function validateFiscalProduct(product: FiscalProductInput) {
 
   if (!product.productCode.trim()) errors.push('Informe o codigo interno do produto.')
   if (!product.description.trim()) errors.push('Informe a descricao do produto.')
-  if (digits(product.ncm).length !== 8) errors.push('NCM do produto deve possuir 8 digitos.')
+  if (product.itemType !== 'Servico' && digits(product.ncm).length !== 8) {
+    errors.push('NCM do produto deve possuir 8 digitos para mercadorias.')
+  }
   if (!product.commercialUnit.trim()) errors.push('Informe a unidade comercial.')
   if (product.hasIcmsSt && (!digits(product.cest) || product.mvaRate <= 0)) {
     errors.push('Produto com ICMS-ST precisa de CEST e MVA.')

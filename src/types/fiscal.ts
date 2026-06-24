@@ -25,6 +25,12 @@ export type FiscalCompanyProfile = {
   fiscalNotes: string
   approvalStatus: FiscalApprovalStatus
   active: boolean
+  confirmedAt?: string
+  confirmedBy?: string
+  dataOrigin?: string
+  ibgeResolvedAt?: string
+  ibgeSource?: string
+  lastVerifiedAt?: string
 }
 
 export type FiscalCompanyProfileInput = Omit<FiscalCompanyProfile, 'id' | 'organizationId' | 'clientId'>
@@ -116,11 +122,19 @@ export type FiscalRuleInput = Omit<FiscalRule, 'id' | 'organizationId' | 'client
 
 export type NcmCatalogItem = {
   code: string
+  normalizedCode?: string
   formattedCode: string
   description: string
   startDate?: string
   endDate?: string
   isActive: boolean
+  legalAct?: string
+  legalActNumber?: string
+  legalActYear?: string
+  hierarchyLevel?: number
+  source?: string
+  sourceVersion?: string
+  importedAt?: string
   sourceUpdatedAt?: string
 }
 
@@ -130,6 +144,10 @@ export type NcmSyncStatus = {
   insertedCodes: number
   updatedCodes: number
   deactivatedCodes: number
+  rejectedCodes: number
+  source: string
+  sourceVersion: string
+  durationMs: number
   errorMessage: string
   startedAt: string
   finishedAt: string
@@ -137,13 +155,17 @@ export type NcmSyncStatus = {
 }
 
 export type NcmSyncResult = {
+  code?: string
+  detail?: string
   success: boolean
   status: string
   message: string
+  receivedContentType?: string
   totalCodes: number
   insertedCodes: number
   updatedCodes: number
   deactivatedCodes: number
+  rejectedCodes: number
   jobId: string
 }
 

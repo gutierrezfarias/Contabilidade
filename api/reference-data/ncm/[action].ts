@@ -1,4 +1,9 @@
-import { proxyFiscalBackend, type VercelRequest, type VercelResponse } from '../../_utils/nfeBackendProxy.js'
+import {
+  proxyFiscalBackend,
+  proxyMultipartBackend,
+  type VercelRequest,
+  type VercelResponse,
+} from '../../_utils/nfeBackendProxy.js'
 
 type RoutedRequest = VercelRequest & {
   query?: {
@@ -8,7 +13,13 @@ type RoutedRequest = VercelRequest & {
   }
 }
 
-const allowedActions = new Set(['search', 'sync', 'sync-status'])
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+}
+
+const allowedActions = new Set(['search', 'sync', 'sync-status', 'import-file'])
 
 function first(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] ?? '' : value ?? ''
@@ -22,6 +33,10 @@ export default async function handler(req: RoutedRequest, res: VercelResponse) {
   }
 
   if (allowedActions.has(action)) {
+    if (action === 'import-file') {
+      return proxyMultipartBackend(req, res, '/api/reference-data/ncm/import-file', ['POST'])
+    }
+
     const search = new URLSearchParams()
     if (action === 'search') {
       search.set('query', first(req.query?.query))

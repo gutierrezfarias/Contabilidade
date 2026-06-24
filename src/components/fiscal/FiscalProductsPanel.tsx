@@ -4,7 +4,8 @@ import {
   listFiscalProducts,
   saveFiscalProduct,
 } from '../../services/fiscalRepository'
-import type { FiscalProduct, FiscalProductInput } from '../../types/fiscal'
+import { searchNcmCatalog } from '../../services/fiscalBackendService'
+import type { FiscalProduct, FiscalProductInput, NcmCatalogItem } from '../../types/fiscal'
 import { validateFiscalProduct } from '../../utils/fiscalValidators'
 
 type FiscalProductsPanelProps = {
@@ -12,6 +13,7 @@ type FiscalProductsPanelProps = {
   organizationId: string | null
   onError: (message: string) => void
   onFeedback: (message: string) => void
+  onChanged?: () => void
 }
 
 const blankProduct: FiscalProductInput = {
@@ -83,12 +85,15 @@ export function FiscalProductsPanel({
   organizationId,
   onError,
   onFeedback,
+  onChanged,
 }: FiscalProductsPanelProps) {
   const [products, setProducts] = useState<FiscalProduct[]>([])
   const [form, setForm] = useState<FiscalProductInput>(blankProduct)
   const [editingId, setEditingId] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [ncmSuggestions, setNcmSuggestions] = useState<NcmCatalogItem[]>([])
+  const [isSearchingNcm, setIsSearchingNcm] = useState(false)
 
   const reloadProducts = useCallback(async () => {
     setIsLoading(true)
@@ -131,6 +136,7 @@ export function FiscalProductsPanel({
     try {
       await saveFiscalProduct(organizationId, clientId, form, editingId || undefined)
       await reloadProducts()
+      onChanged?.()
       resetForm()
       onFeedback('Produto fiscal salvo com sucesso.')
     } catch (error) {
@@ -148,6 +154,7 @@ export function FiscalProductsPanel({
     try {
       await deleteFiscalProduct(productId)
       await reloadProducts()
+      onChanged?.()
       onFeedback('Produto fiscal desativado.')
     } catch (error) {
       onFeedback('')
@@ -162,6 +169,35 @@ export function FiscalProductsPanel({
 
     return () => window.clearTimeout(timer)
   }, [reloadProducts])
+
+  useEffect(() => {
+    const query = form.ncm.trim()
+    if (query.length < 3 || form.itemType === 'Servico') {
+      const clearTimer = window.setTimeout(() => setNcmSuggestions([]), 0)
+      return () => window.clearTimeout(clearTimer)
+    }
+
+    let active = true
+
+    const timer = window.setTimeout(() => {
+      if (active) setIsSearchingNcm(true)
+      searchNcmCatalog(query, 8)
+        .then((items) => {
+          if (active) setNcmSuggestions(items)
+        })
+        .catch(() => {
+          if (active) setNcmSuggestions([])
+        })
+        .finally(() => {
+          if (active) setIsSearchingNcm(false)
+        })
+    }, 350)
+
+    return () => {
+      active = false
+      window.clearTimeout(timer)
+    }
+  }, [form.itemType, form.ncm])
 
   return (
     <section className="mt-6 grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
@@ -190,7 +226,18 @@ export function FiscalProductsPanel({
         <div className="mt-5 grid gap-4 md:grid-cols-2">
           <Field label="Codigo" required value={form.productCode} onChange={(value) => updateField('productCode', value)} />
           <Field label="Descricao" required value={form.description} onChange={(value) => updateField('description', value)} />
-          <Field label="NCM" required value={form.ncm} onChange={(value) => updateField('ncm', value)} />
+          <NcmAutocomplete
+            disabled={form.itemType === 'Servico'}
+            isLoading={isSearchingNcm}
+            onChange={(value) => updateField('ncm', value)}
+            onSelect={(item) => {
+              updateField('ncm', item.normalizedCode || item.code)
+              setNcmSuggestions([])
+            }}
+            required={form.itemType !== 'Servico'}
+            suggestions={ncmSuggestions}
+            value={form.ncm}
+          />
           <Field label="CEST" value={form.cest} onChange={(value) => updateField('cest', value)} />
           <Field label="GTIN/EAN" value={form.gtin} onChange={(value) => updateField('gtin', value)} />
           <Field label="Unidade comercial" value={form.commercialUnit} onChange={(value) => updateField('commercialUnit', value)} />
@@ -345,6 +392,68 @@ export function FiscalProductsPanel({
         </div>
       </article>
     </section>
+  )
+}
+
+function formatNcmCode(value: string) {
+  const digits = value.replace(/\D/g, '').slice(0, 8)
+  if (digits.length <= 4) return digits
+  if (digits.length <= 6) return `${digits.slice(0, 4)}.${digits.slice(4)}`
+  return `${digits.slice(0, 4)}.${digits.slice(4, 6)}.${digits.slice(6)}`
+}
+
+function NcmAutocomplete({
+  disabled,
+  isLoading,
+  onChange,
+  onSelect,
+  required,
+  suggestions,
+  value,
+}: {
+  disabled: boolean
+  isLoading: boolean
+  onChange: (value: string) => void
+  onSelect: (item: NcmCatalogItem) => void
+  required: boolean
+  suggestions: NcmCatalogItem[]
+  value: string
+}) {
+  return (
+    <label className="relative text-sm font-semibold text-slate-700">
+      NCM
+      {required && <span className="text-rose-500"> *</span>}
+      <input
+        className="mt-2 h-12 w-full rounded-xl border border-slate-200 px-4 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-50 disabled:text-slate-400"
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={disabled ? 'Nao exigido para servico' : 'Digite codigo ou descricao'}
+        value={formatNcmCode(value)}
+      />
+      {isLoading && <span className="mt-1 block text-xs text-slate-400">Buscando NCM...</span>}
+      {!disabled && suggestions.length > 0 && (
+        <div className="absolute z-20 mt-2 max-h-72 w-full overflow-auto rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
+          {suggestions.map((item) => (
+            <button
+              className="block w-full rounded-xl px-3 py-2 text-left text-sm transition hover:bg-indigo-50 focus:bg-indigo-50 focus:outline-none"
+              key={`${item.normalizedCode || item.code}-${item.description}`}
+              onClick={() => onSelect(item)}
+              type="button"
+            >
+              <span className="font-bold text-slate-900">
+                {item.formattedCode || formatNcmCode(item.normalizedCode || item.code)}
+              </span>
+              <span className="mt-1 block text-xs leading-5 text-slate-500">{item.description}</span>
+              <span className={`mt-2 inline-flex rounded-full px-2 py-0.5 text-[11px] font-bold ${
+                item.isActive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'
+              }`}>
+                {item.isActive ? 'Ativo' : 'Inativo'}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </label>
   )
 }
 

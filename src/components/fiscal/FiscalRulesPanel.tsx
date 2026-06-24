@@ -15,6 +15,7 @@ type FiscalRulesPanelProps = {
   organizationId: string | null
   onError: (message: string) => void
   onFeedback: (message: string) => void
+  onChanged?: () => void
 }
 
 const today = new Date().toISOString().slice(0, 10)
@@ -106,6 +107,7 @@ export function FiscalRulesPanel({
   organizationId,
   onError,
   onFeedback,
+  onChanged,
 }: FiscalRulesPanelProps) {
   const [rules, setRules] = useState<FiscalRule[]>([])
   const [products, setProducts] = useState<FiscalProduct[]>([])
@@ -160,6 +162,7 @@ export function FiscalRulesPanel({
     try {
       await saveFiscalRule(organizationId, clientId, form, editingId || undefined)
       await reload()
+      onChanged?.()
       resetForm()
       onFeedback('Regra fiscal salva com sucesso.')
     } catch (error) {
@@ -177,6 +180,7 @@ export function FiscalRulesPanel({
     try {
       await deleteFiscalRule(ruleId)
       await reload()
+      onChanged?.()
       onFeedback('Regra fiscal desativada.')
     } catch (error) {
       onFeedback('')
@@ -191,6 +195,7 @@ export function FiscalRulesPanel({
     try {
       await approveFiscalRule(ruleId, 'Aprovacao formal pelo modulo fiscal.')
       await reload()
+      onChanged?.()
       onFeedback('Regra fiscal aprovada.')
     } catch (error) {
       onFeedback('')
@@ -208,6 +213,7 @@ export function FiscalRulesPanel({
     try {
       await rejectFiscalRule(ruleId, reason)
       await reload()
+      onChanged?.()
       onFeedback('Regra fiscal rejeitada.')
     } catch (error) {
       onFeedback('')

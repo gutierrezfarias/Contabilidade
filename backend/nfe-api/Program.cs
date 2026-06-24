@@ -780,6 +780,64 @@ app.MapPost("/api/reference-data/ncm/sync", async (
     }
 });
 
+app.MapPost("/api/reference-data/ncm/import-file", async (
+    HttpContext httpContext,
+    SupabaseNfeRepository nfeRepository,
+    NcmCatalogService ncmService,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var userId = await nfeRepository.RequireUserAsync(
+            httpContext.Request.Headers.Authorization.ToString(),
+            cancellationToken);
+
+        if (!httpContext.Request.HasFormContentType)
+        {
+            var receivedContentType = httpContext.Request.ContentType ?? "";
+            return Results.Json(
+                new
+                {
+                    ok = false,
+                    success = false,
+                    code = "NCM_MULTIPART_REQUIRED",
+                    detail = "Envie a planilha NCM em multipart/form-data.",
+                    receivedContentType
+                },
+                statusCode: StatusCodes.Status415UnsupportedMediaType);
+        }
+
+        var form = await httpContext.Request.ReadFormAsync(cancellationToken);
+        var result = await ncmService.ImportFileAsync(
+            userId,
+            form.Files.GetFile("file"),
+            cancellationToken);
+
+        return Results.Ok(result);
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (NcmCatalogImportException error)
+    {
+        return Results.Json(
+            new
+            {
+                ok = false,
+                success = false,
+                code = error.Code,
+                detail = error.Detail,
+                receivedContentType = error.ReceivedContentType
+            },
+            statusCode: error.StatusCode);
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+}).Accepts<IFormFile>("multipart/form-data");
+
 app.MapGet("/api/accounting-integrations", async (
     string organizationId,
     HttpContext httpContext,

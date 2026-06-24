@@ -1,26 +1,41 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { FiscalProductsPanel } from '../../components/fiscal/FiscalProductsPanel'
+import { FiscalReadinessTimeline } from '../../components/fiscal/FiscalReadinessTimeline'
 import { FiscalRulesPanel } from '../../components/fiscal/FiscalRulesPanel'
 import { FiscalSimulatorPanel } from '../../components/fiscal/FiscalSimulatorPanel'
 import { DashboardLayout } from '../../components/layout/DashboardLayout'
 import {
+  applyFiscalEnrichmentSuggestions,
+  consultFiscalClientEnrichment,
+  fieldSourceLabel,
+  type FiscalEnrichmentField,
+  type FiscalEnrichmentSuggestion,
+} from '../../services/fiscalClientEnrichmentService'
+import {
   getNcmSyncStatus,
+  importNcmCatalogFile,
   searchNcmCatalog,
   syncNcmCatalog,
 } from '../../services/fiscalBackendService'
 import {
   approveFiscalCompanyProfile,
   getFiscalCompanyProfile,
+  listFiscalProducts,
+  listFiscalRules,
   rejectFiscalCompanyProfile,
+  recordFiscalFieldSources,
   upsertFiscalCompanyProfile,
 } from '../../services/fiscalRepository'
+import { calculateFiscalReadiness } from '../../services/fiscalReadinessService'
 import { listAccountingClients } from '../../services/accountingRepository'
 import { resolveOrganizationId } from '../../services/platformService'
 import type { AccountingClient } from '../../types/accounting'
 import type {
   FiscalCompanyProfile,
   FiscalCompanyProfileInput,
+  FiscalProduct,
+  FiscalRule,
   NcmCatalogItem,
   NcmSyncStatus,
 } from '../../types/fiscal'
@@ -189,6 +204,12 @@ function profileInputFromProfile(profile: FiscalCompanyProfile): FiscalCompanyPr
     fiscalNotes: profile.fiscalNotes,
     approvalStatus: profile.approvalStatus,
     active: profile.active,
+    confirmedAt: profile.confirmedAt,
+    confirmedBy: profile.confirmedBy,
+    dataOrigin: profile.dataOrigin,
+    ibgeResolvedAt: profile.ibgeResolvedAt,
+    ibgeSource: profile.ibgeSource,
+    lastVerifiedAt: profile.lastVerifiedAt,
   }
 }
 
@@ -216,14 +237,22 @@ export function FiscalModule() {
   const [query, setQuery] = useState('')
   const [items, setItems] = useState<NcmCatalogItem[]>([])
   const [syncStatus, setSyncStatus] = useState<NcmSyncStatus | null>(null)
+  const [timelineProducts, setTimelineProducts] = useState<FiscalProduct[]>([])
+  const [timelineRules, setTimelineRules] = useState<FiscalRule[]>([])
+  const [enrichmentSuggestions, setEnrichmentSuggestions] = useState<FiscalEnrichmentSuggestion[]>([])
+  const [selectedEnrichmentFields, setSelectedEnrichmentFields] = useState<Set<FiscalEnrichmentField>>(new Set())
   const [feedback, setFeedback] = useState('')
   const [error, setError] = useState('')
   const [isLoadingClients, setIsLoadingClients] = useState(true)
   const [isLoadingProfile, setIsLoadingProfile] = useState(false)
   const [isSavingProfile, setIsSavingProfile] = useState(false)
+  const [isEnrichingProfile, setIsEnrichingProfile] = useState(false)
+  const [isApplyingEnrichment, setIsApplyingEnrichment] = useState(false)
   const [isLoadingStatus, setIsLoadingStatus] = useState(true)
   const [isSearching, setIsSearching] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
+  const [isImportingNcm, setIsImportingNcm] = useState(false)
+  const [selectedNcmFile, setSelectedNcmFile] = useState<File | null>(null)
 
   const selectedClient = useMemo(
     () => clients.find((client) => client.id === clientId) ?? null,
@@ -232,6 +261,17 @@ export function FiscalModule() {
   const totalActive = useMemo(
     () => items.filter((item) => item.isActive).length,
     [items],
+  )
+  const readiness = useMemo(
+    () =>
+      calculateFiscalReadiness({
+        client: selectedClient,
+        ncmSyncStatus: syncStatus,
+        products: timelineProducts,
+        profile,
+        rules: timelineRules,
+      }),
+    [profile, selectedClient, syncStatus, timelineProducts, timelineRules],
   )
 
   const loadSyncStatus = useCallback(async () => {
@@ -247,7 +287,26 @@ export function FiscalModule() {
     }
   }, [])
 
-  async function handleSearch() {
+  const loadReadinessData = useCallback(async () => {
+    if (!organizationId || !clientId) {
+      setTimelineProducts([])
+      setTimelineRules([])
+      return
+    }
+
+    try {
+      const [products, rules] = await Promise.all([
+        listFiscalProducts(organizationId, clientId),
+        listFiscalRules(organizationId, clientId),
+      ])
+      setTimelineProducts(products)
+      setTimelineRules(rules)
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : 'Nao foi possivel atualizar a jornada fiscal.')
+    }
+  }, [clientId, organizationId])
+
+  const handleSearch = useCallback(async () => {
     const cleanedQuery = query.trim()
 
     if (cleanedQuery.length < 2) {
@@ -262,14 +321,20 @@ export function FiscalModule() {
     try {
       const result = await searchNcmCatalog(cleanedQuery, 30)
       setItems(result)
-      setFeedback(result.length ? `${result.length} NCM encontrado(s).` : 'Nenhum NCM encontrado para a busca.')
+      setFeedback(
+        result.length
+          ? `${result.length} NCM encontrado(s).`
+          : syncStatus?.totalCodes
+            ? 'Nenhum NCM encontrado para a busca.'
+            : 'Tabela NCM ainda nao sincronizada.',
+      )
     } catch (searchError) {
       setItems([])
       setError(searchError instanceof Error ? searchError.message : 'Nao foi possivel buscar NCM.')
     } finally {
       setIsSearching(false)
     }
-  }
+  }, [query, syncStatus])
 
   async function handleSync() {
     setIsSyncing(true)
@@ -280,10 +345,41 @@ export function FiscalModule() {
       const result = await syncNcmCatalog()
       setFeedback(result.message || 'Sincronizacao NCM iniciada/concluida.')
       await loadSyncStatus()
+      await loadReadinessData()
     } catch (syncError) {
       setError(syncError instanceof Error ? syncError.message : 'Nao foi possivel sincronizar a tabela NCM.')
     } finally {
       setIsSyncing(false)
+    }
+  }
+
+  async function handleImportNcmFile() {
+    setFeedback('')
+    setError('')
+
+    if (!selectedNcmFile) {
+      setError('Selecione um arquivo XLSX valido para importar a Tabela NCM.')
+      return
+    }
+
+    setIsImportingNcm(true)
+    setFeedback('Importando Tabela NCM por arquivo XLSX...')
+
+    try {
+      const result = await importNcmCatalogFile(selectedNcmFile)
+      setFeedback(result.message || 'Tabela NCM importada com sucesso.')
+      setSelectedNcmFile(null)
+      await loadSyncStatus()
+      await loadReadinessData()
+    } catch (importError) {
+      setFeedback('')
+      setError(
+        importError instanceof Error
+          ? importError.message
+          : 'Nao foi possivel importar a Tabela NCM. Selecione um arquivo XLSX valido.',
+      )
+    } finally {
+      setIsImportingNcm(false)
     }
   }
 
@@ -320,6 +416,7 @@ export function FiscalModule() {
       setProfileId(savedProfile.id)
       setProfile(profileInputFromProfile(savedProfile))
       setSecondaryCnaesText(formatSecondaryCnaes(savedProfile.secondaryCnaes))
+      await loadReadinessData()
       setFeedback('Perfil fiscal salvo com sucesso.')
     } catch (saveError) {
       setFeedback('')
@@ -339,6 +436,7 @@ export function FiscalModule() {
       const approved = await approveFiscalCompanyProfile(profileId, 'Aprovacao formal pelo modulo fiscal.')
       setProfile(profileInputFromProfile(approved))
       setSecondaryCnaesText(formatSecondaryCnaes(approved.secondaryCnaes))
+      await loadReadinessData()
       setFeedback('Perfil fiscal aprovado.')
     } catch (approveError) {
       setFeedback('')
@@ -359,11 +457,121 @@ export function FiscalModule() {
       const rejected = await rejectFiscalCompanyProfile(profileId, reason)
       setProfile(profileInputFromProfile(rejected))
       setSecondaryCnaesText(formatSecondaryCnaes(rejected.secondaryCnaes))
+      await loadReadinessData()
       setFeedback('Perfil fiscal rejeitado.')
     } catch (rejectError) {
       setFeedback('')
       setError(rejectError instanceof Error ? rejectError.message : 'Nao foi possivel rejeitar o perfil fiscal.')
     }
+  }
+
+  async function handlePreviewEnrichment() {
+    if (!selectedClient) {
+      setError('Selecione um cliente para atualizar dados cadastrais.')
+      return
+    }
+
+    setFeedback('')
+    setError('')
+    setIsEnrichingProfile(true)
+
+    try {
+      const currentProfile = {
+        ...profile,
+        secondaryCnaes: parseSecondaryCnaes(secondaryCnaesText),
+      }
+      const result = await consultFiscalClientEnrichment(selectedClient, currentProfile)
+      setEnrichmentSuggestions(result.suggestions)
+      setSelectedEnrichmentFields(new Set(result.suggestions.filter((item) => item.selected).map((item) => item.field)))
+
+      if (!result.suggestions.length) {
+        setFeedback('Nenhuma divergencia ou sugestao cadastral encontrada para este perfil.')
+      }
+    } catch (enrichError) {
+      setError(enrichError instanceof Error ? enrichError.message : 'Nao foi possivel atualizar dados cadastrais.')
+    } finally {
+      setIsEnrichingProfile(false)
+    }
+  }
+
+  async function handleApplyEnrichment() {
+    if (!organizationId || !clientId) {
+      setError('Selecione um cliente para aplicar as sugestoes.')
+      return
+    }
+
+    const selectedSuggestions = enrichmentSuggestions.filter(
+      (suggestion) => selectedEnrichmentFields.has(suggestion.field) && !suggestion.blocked,
+    )
+
+    if (!selectedSuggestions.length) {
+      setError('Selecione pelo menos uma sugestao liberada para aplicar.')
+      return
+    }
+
+    setError('')
+    setFeedback('Aplicando sugestoes cadastrais...')
+    setIsApplyingEnrichment(true)
+
+    try {
+      const nextProfile = applyFiscalEnrichmentSuggestions(
+        {
+          ...profile,
+          secondaryCnaes: parseSecondaryCnaes(secondaryCnaesText),
+        },
+        enrichmentSuggestions,
+        selectedEnrichmentFields,
+      )
+      const now = new Date().toISOString()
+      const hasIbge = selectedSuggestions.some((suggestion) => suggestion.field === 'cityIbgeCode')
+      const savedProfile = await upsertFiscalCompanyProfile(organizationId, clientId, {
+        ...nextProfile,
+        dataOrigin: 'client_enrichment',
+        ibgeResolvedAt: hasIbge ? now : nextProfile.ibgeResolvedAt,
+        ibgeSource: hasIbge ? 'ibge' : nextProfile.ibgeSource,
+        lastVerifiedAt: now,
+      })
+
+      setProfileId(savedProfile.id)
+      setProfile(profileInputFromProfile(savedProfile))
+      setSecondaryCnaesText(formatSecondaryCnaes(savedProfile.secondaryCnaes))
+
+      try {
+        await recordFiscalFieldSources(
+          organizationId,
+          clientId,
+          savedProfile.id,
+          selectedSuggestions.map((suggestion) => ({
+            confirmationStatus: 'confirmed',
+            fieldName: suggestion.field,
+            newValue: suggestion.suggestedValue,
+            oldValue: suggestion.currentValue,
+            source: suggestion.source,
+          })),
+        )
+      } catch {
+        // A origem dos campos melhora a auditoria, mas nao deve desfazer o perfil ja salvo.
+      }
+
+      setEnrichmentSuggestions([])
+      setSelectedEnrichmentFields(new Set())
+      await loadReadinessData()
+      setFeedback('Dados cadastrais aplicados ao perfil fiscal.')
+    } catch (applyError) {
+      setFeedback('')
+      setError(applyError instanceof Error ? applyError.message : 'Nao foi possivel aplicar as sugestoes.')
+    } finally {
+      setIsApplyingEnrichment(false)
+    }
+  }
+
+  function toggleEnrichmentField(field: FiscalEnrichmentField, checked: boolean) {
+    setSelectedEnrichmentFields((current) => {
+      const next = new Set(current)
+      if (checked) next.add(field)
+      else next.delete(field)
+      return next
+    })
   }
 
   useEffect(() => {
@@ -454,6 +662,27 @@ export function FiscalModule() {
     return () => window.clearTimeout(timer)
   }, [loadSyncStatus])
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadReadinessData()
+    }, 0)
+
+    return () => window.clearTimeout(timer)
+  }, [loadReadinessData])
+
+  useEffect(() => {
+    const cleanedQuery = query.trim()
+    if (activeTab !== 'ncm' || cleanedQuery.length < 3) {
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      void handleSearch()
+    }, 450)
+
+    return () => window.clearTimeout(timer)
+  }, [activeTab, handleSearch, query])
+
   return (
     <DashboardLayout title="Fiscal">
       <div className="mb-8">
@@ -486,6 +715,8 @@ export function FiscalModule() {
         ))}
       </section>
 
+      <FiscalReadinessTimeline readiness={readiness} onNavigate={(tab) => setActiveTab(tab)} />
+
       <nav className="mt-6 grid gap-3 rounded-3xl border border-slate-100 bg-white p-3 shadow-sm md:grid-cols-5">
         {fiscalTabs.map((tab) => (
           <button
@@ -514,14 +745,24 @@ export function FiscalModule() {
                 Estes dados alimentam emissao, validacao fiscal, regras tributarias e simulacao da NF-e.
               </p>
             </div>
-            <button
-              className="h-11 rounded-xl bg-indigo-600 px-5 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
-              disabled={isSavingProfile || isLoadingProfile || !clientId}
-              onClick={() => void handleSaveProfile()}
-              type="button"
-            >
-              {isSavingProfile ? 'Salvando...' : 'Salvar perfil fiscal'}
-            </button>
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <button
+                className="h-11 rounded-xl border border-indigo-200 px-5 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:text-indigo-300"
+                disabled={isEnrichingProfile || isSavingProfile || isLoadingProfile || !clientId}
+                onClick={() => void handlePreviewEnrichment()}
+                type="button"
+              >
+                {isEnrichingProfile ? 'Consultando...' : 'Atualizar dados cadastrais'}
+              </button>
+              <button
+                className="h-11 rounded-xl bg-indigo-600 px-5 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
+                disabled={isSavingProfile || isLoadingProfile || !clientId}
+                onClick={() => void handleSaveProfile()}
+                type="button"
+              >
+                {isSavingProfile ? 'Salvando...' : 'Salvar perfil fiscal'}
+              </button>
+            </div>
           </div>
 
           <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_260px]">
@@ -573,6 +814,83 @@ export function FiscalModule() {
               )}
             </div>
           </div>
+
+          {enrichmentSuggestions.length > 0 && (
+            <div className="mt-6 rounded-3xl border border-indigo-100 bg-indigo-50 p-5">
+              <div className="flex flex-col justify-between gap-3 border-b border-indigo-100 pb-4 lg:flex-row lg:items-start">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-600">Previa de atualizacao</p>
+                  <h4 className="mt-2 text-lg font-bold text-slate-900">Sugestoes cadastrais encontradas</h4>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">
+                    Revise campo por campo. Valores ja confirmados no perfil aprovado nao sao marcados automaticamente.
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    className="h-10 rounded-xl border border-slate-200 bg-white px-4 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                    onClick={() => {
+                      setEnrichmentSuggestions([])
+                      setSelectedEnrichmentFields(new Set())
+                    }}
+                    type="button"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    className="h-10 rounded-xl bg-indigo-600 px-4 text-xs font-bold text-white hover:bg-indigo-700 disabled:bg-indigo-300"
+                    disabled={isApplyingEnrichment}
+                    onClick={() => void handleApplyEnrichment()}
+                    type="button"
+                  >
+                    {isApplyingEnrichment ? 'Aplicando...' : 'Aplicar selecionados'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-3">
+                {enrichmentSuggestions.map((suggestion) => (
+                  <label
+                    className={`rounded-2xl border bg-white p-4 text-sm ${
+                      suggestion.blocked ? 'border-amber-200' : 'border-slate-100'
+                    }`}
+                    key={`${suggestion.field}-${suggestion.source}-${suggestion.suggestedValue}`}
+                  >
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div className="flex gap-3">
+                        <input
+                          checked={selectedEnrichmentFields.has(suggestion.field)}
+                          disabled={suggestion.blocked}
+                          onChange={(event) => toggleEnrichmentField(suggestion.field, event.target.checked)}
+                          type="checkbox"
+                        />
+                        <div>
+                          <p className="font-bold text-slate-900">{suggestion.label}</p>
+                          <p className="mt-1 text-xs text-slate-500">
+                            Fonte: {fieldSourceLabel(suggestion.source)} | {suggestion.reason}
+                          </p>
+                        </div>
+                      </div>
+                      {suggestion.blocked && (
+                        <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-700">
+                          Confirmado: nao sobrescrever automaticamente
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <div className="rounded-xl bg-slate-50 p-3">
+                        <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Atual</p>
+                        <p className="mt-1 whitespace-pre-wrap text-slate-700">{suggestion.currentValue}</p>
+                      </div>
+                      <div className="rounded-xl bg-emerald-50 p-3">
+                        <p className="text-xs font-bold uppercase tracking-wide text-emerald-600">Sugerido</p>
+                        <p className="mt-1 whitespace-pre-wrap text-emerald-900">{suggestion.suggestedValue}</p>
+                      </div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             <div>
@@ -845,12 +1163,52 @@ export function FiscalModule() {
                   <span>Inseridos: {syncStatus.insertedCodes}</span>
                   <span>Atualizados: {syncStatus.updatedCodes}</span>
                   <span>Inativados: {syncStatus.deactivatedCodes}</span>
+                  <span>Rejeitados: {syncStatus.rejectedCodes}</span>
+                  <span>Fonte: {syncStatus.source || 'Nao informada'}</span>
+                  <span>Versao: {syncStatus.sourceVersion || 'Nao informada'}</span>
+                  <span>Duracao: {syncStatus.durationMs ? `${syncStatus.durationMs} ms` : 'Nao registrada'}</span>
                 </div>
                 {syncStatus.errorMessage && <p className="text-rose-700">{syncStatus.errorMessage}</p>}
               </div>
             ) : (
               'Nenhuma sincronizacao registrada ainda.'
             )}
+          </div>
+
+          <div className="mt-6 rounded-2xl border border-slate-100 bg-slate-50 p-4">
+            <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
+              <div>
+                <p className="text-sm font-bold text-slate-900">Importar arquivo XLSX</p>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  Use somente como contingencia quando a fonte automatica falhar. O arquivo deve ser uma planilha XLSX
+                  oficial ou compatível com colunas de código e descrição NCM.
+                </p>
+                {selectedNcmFile && (
+                  <p className="mt-2 text-xs font-semibold text-indigo-700">
+                    Selecionado: {selectedNcmFile.name}
+                  </p>
+                )}
+              </div>
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <label className="inline-flex h-11 cursor-pointer items-center justify-center rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50">
+                  Selecionar XLSX
+                  <input
+                    accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/octet-stream"
+                    className="sr-only"
+                    onChange={(event) => setSelectedNcmFile(event.target.files?.[0] ?? null)}
+                    type="file"
+                  />
+                </label>
+                <button
+                  className="h-11 rounded-xl bg-slate-950 px-5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                  disabled={isImportingNcm || !selectedNcmFile}
+                  onClick={() => void handleImportNcmFile()}
+                  type="button"
+                >
+                  {isImportingNcm ? 'Importando...' : 'Importar XLSX'}
+                </button>
+              </div>
+            </div>
           </div>
 
           <div className="mt-6">
@@ -931,6 +1289,7 @@ export function FiscalModule() {
       {activeTab === 'produtos' && (
         <FiscalProductsPanel
           clientId={clientId}
+          onChanged={() => void loadReadinessData()}
           onError={setError}
           onFeedback={setFeedback}
           organizationId={organizationId}
@@ -940,6 +1299,7 @@ export function FiscalModule() {
       {activeTab === 'regras' && (
         <FiscalRulesPanel
           clientId={clientId}
+          onChanged={() => void loadReadinessData()}
           onError={setError}
           onFeedback={setFeedback}
           organizationId={organizationId}
