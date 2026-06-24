@@ -213,6 +213,7 @@ public sealed record FiscalAuditWrite
     public string Reason { get; init; } = "";
     public string CreatedBy { get; init; } = "";
     public string Origin { get; init; } = "backend";
+    public string CorrelationId { get; init; } = "";
     public object? Metadata { get; init; }
 }
 

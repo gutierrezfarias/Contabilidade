@@ -332,6 +332,7 @@ public sealed class SupabaseFiscalRepository(IHttpClientFactory httpClientFactor
             {
                 action = audit.Action,
                 client_id = audit.ClientId,
+                correlation_id = string.IsNullOrWhiteSpace(audit.CorrelationId) ? "" : audit.CorrelationId,
                 created_by = string.IsNullOrWhiteSpace(audit.CreatedBy) ? null : audit.CreatedBy,
                 entity_id = string.IsNullOrWhiteSpace(audit.EntityId) ? null : audit.EntityId,
                 entity_type = audit.EntityType,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   deleteFiscalProduct,
   listFiscalProducts,
@@ -10,6 +10,7 @@ import { validateFiscalProduct } from '../../utils/fiscalValidators'
 
 type FiscalProductsPanelProps = {
   clientId: string
+  companyLabel: string
   organizationId: string | null
   onError: (message: string) => void
   onFeedback: (message: string) => void
@@ -82,6 +83,7 @@ function productToInput(product: FiscalProduct): FiscalProductInput {
 
 export function FiscalProductsPanel({
   clientId,
+  companyLabel,
   organizationId,
   onError,
   onFeedback,
@@ -94,15 +96,35 @@ export function FiscalProductsPanel({
   const [isSaving, setIsSaving] = useState(false)
   const [ncmSuggestions, setNcmSuggestions] = useState<NcmCatalogItem[]>([])
   const [isSearchingNcm, setIsSearchingNcm] = useState(false)
+  const requestRef = useRef(0)
 
   const reloadProducts = useCallback(async () => {
+    requestRef.current += 1
+    const requestId = requestRef.current
+
+    setProducts([])
+    setNcmSuggestions([])
+    setForm(blankProduct)
+    setEditingId('')
+
+    if (!organizationId || !clientId) {
+      setIsLoading(false)
+      return
+    }
+
+    const scopedOrganizationId = organizationId
+    const scopedClientId = clientId
+
     setIsLoading(true)
     try {
-      setProducts(await listFiscalProducts(organizationId, clientId))
+      const loadedProducts = await listFiscalProducts(scopedOrganizationId, scopedClientId)
+      if (requestId !== requestRef.current) return
+      setProducts(loadedProducts)
     } catch (error) {
+      if (requestId !== requestRef.current) return
       onError(error instanceof Error ? error.message : 'Nao foi possivel carregar produtos fiscais.')
     } finally {
-      setIsLoading(false)
+      if (requestId === requestRef.current) setIsLoading(false)
     }
   }, [clientId, onError, organizationId])
 
@@ -121,6 +143,10 @@ export function FiscalProductsPanel({
 
     if (!organizationId || !clientId) {
       onError('Selecione um cliente antes de cadastrar produtos fiscais.')
+      return
+    }
+
+    if (!window.confirm(`Confirmar salvamento do produto fiscal para ${companyLabel}?`)) {
       return
     }
 
@@ -148,6 +174,10 @@ export function FiscalProductsPanel({
   }
 
   async function handleDelete(productId: string) {
+    if (!window.confirm(`Confirmar desativacao do produto fiscal para ${companyLabel}?`)) {
+      return
+    }
+
     onError('')
     onFeedback('Desativando produto fiscal...')
 
@@ -324,7 +354,7 @@ export function FiscalProductsPanel({
 
         <button
           className="mt-5 h-12 w-full rounded-xl bg-indigo-600 px-5 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
-          disabled={isSaving}
+          disabled={isSaving || !organizationId || !clientId}
           onClick={() => void handleSave()}
           type="button"
         >

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   approveFiscalRule,
   deleteFiscalRule,
@@ -12,6 +12,7 @@ import { validateFiscalRule } from '../../utils/fiscalValidators'
 
 type FiscalRulesPanelProps = {
   clientId: string
+  companyLabel: string
   organizationId: string | null
   onError: (message: string) => void
   onFeedback: (message: string) => void
@@ -104,6 +105,7 @@ function ruleToInput(rule: FiscalRule): FiscalRuleInput {
 
 export function FiscalRulesPanel({
   clientId,
+  companyLabel,
   organizationId,
   onError,
   onFeedback,
@@ -115,20 +117,39 @@ export function FiscalRulesPanel({
   const [editingId, setEditingId] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const requestRef = useRef(0)
 
   const reload = useCallback(async () => {
+    requestRef.current += 1
+    const requestId = requestRef.current
+
+    setRules([])
+    setProducts([])
+    setEditingId('')
+    setForm(blankRule)
+
+    if (!organizationId || !clientId) {
+      setIsLoading(false)
+      return
+    }
+
+    const scopedOrganizationId = organizationId
+    const scopedClientId = clientId
+
     setIsLoading(true)
     try {
       const [loadedRules, loadedProducts] = await Promise.all([
-        listFiscalRules(organizationId, clientId),
-        listFiscalProducts(organizationId, clientId),
+        listFiscalRules(scopedOrganizationId, scopedClientId),
+        listFiscalProducts(scopedOrganizationId, scopedClientId),
       ])
+      if (requestId !== requestRef.current) return
       setRules(loadedRules)
       setProducts(loadedProducts)
     } catch (error) {
+      if (requestId !== requestRef.current) return
       onError(error instanceof Error ? error.message : 'Nao foi possivel carregar regras fiscais.')
     } finally {
-      setIsLoading(false)
+      if (requestId === requestRef.current) setIsLoading(false)
     }
   }, [clientId, onError, organizationId])
 
@@ -147,6 +168,10 @@ export function FiscalRulesPanel({
 
     if (!organizationId || !clientId) {
       onError('Selecione um cliente antes de cadastrar regras fiscais.')
+      return
+    }
+
+    if (!window.confirm(`Confirmar salvamento da regra fiscal para ${companyLabel}?`)) {
       return
     }
 
@@ -174,6 +199,10 @@ export function FiscalRulesPanel({
   }
 
   async function handleDelete(ruleId: string) {
+    if (!window.confirm(`Confirmar desativacao da regra fiscal para ${companyLabel}?`)) {
+      return
+    }
+
     onError('')
     onFeedback('Desativando regra fiscal...')
 
@@ -189,6 +218,10 @@ export function FiscalRulesPanel({
   }
 
   async function handleApprove(ruleId: string) {
+    if (!window.confirm(`Confirmar aprovacao da regra fiscal para ${companyLabel}?`)) {
+      return
+    }
+
     onError('')
     onFeedback('Aprovando regra fiscal...')
 
@@ -204,6 +237,10 @@ export function FiscalRulesPanel({
   }
 
   async function handleReject(ruleId: string) {
+    if (!window.confirm(`Confirmar rejeicao da regra fiscal para ${companyLabel}?`)) {
+      return
+    }
+
     const reason = window.prompt('Informe o motivo da rejeicao da regra fiscal:')
     if (!reason) return
 
@@ -340,7 +377,7 @@ export function FiscalRulesPanel({
 
         <button
           className="mt-5 h-12 w-full rounded-xl bg-indigo-600 px-5 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
-          disabled={isSaving}
+          disabled={isSaving || !organizationId || !clientId}
           onClick={() => void handleSave()}
           type="button"
         >

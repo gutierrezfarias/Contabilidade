@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { previewNfeTaxes } from '../../services/fiscalBackendService'
 import { listFiscalProducts } from '../../services/fiscalRepository'
 import type { AccountingClient } from '../../types/accounting'
@@ -9,6 +9,7 @@ import { formatCurrencyBRL, onlyDigits } from '../../utils/formatters'
 type FiscalSimulatorPanelProps = {
   client: AccountingClient | null
   clientId: string
+  companyLabel: string
   organizationId: string | null
   onError: (message: string) => void
   onFeedback: (message: string) => void
@@ -79,6 +80,7 @@ function productToItem(product: FiscalProduct, quantity: number, unitValue: numb
 export function FiscalSimulatorPanel({
   client,
   clientId,
+  companyLabel,
   organizationId,
   onError,
   onFeedback,
@@ -88,6 +90,7 @@ export function FiscalSimulatorPanel({
   const [result, setResult] = useState<NfeTaxPreviewResult | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [isCalculating, setIsCalculating] = useState(false)
+  const requestRef = useRef(0)
 
   const selectedProduct = useMemo(
     () => products.find((product) => product.id === form.productId) ?? null,
@@ -95,21 +98,43 @@ export function FiscalSimulatorPanel({
   )
 
   const reloadProducts = useCallback(async () => {
+    requestRef.current += 1
+    const requestId = requestRef.current
+
+    setProducts([])
+    setResult(null)
+    setForm({
+      ...blankForm,
+      destinatarioUf: client?.state || '',
+    })
+
+    if (!organizationId || !clientId || !client) {
+      setIsLoading(false)
+      return
+    }
+
+    const scopedOrganizationId = organizationId
+    const scopedClientId = clientId
+    const scopedClientState = client.state
+
     setIsLoading(true)
     try {
-      const loadedProducts = await listFiscalProducts(organizationId, clientId)
-      setProducts(loadedProducts.filter((product) => product.active))
+      const loadedProducts = await listFiscalProducts(scopedOrganizationId, scopedClientId)
+      if (requestId !== requestRef.current) return
+      const activeProducts = loadedProducts.filter((product) => product.active)
+      setProducts(activeProducts)
       setForm((current) => ({
         ...current,
-        destinatarioUf: current.destinatarioUf || client?.state || '',
-        productId: current.productId || loadedProducts.find((product) => product.active)?.id || '',
+        destinatarioUf: current.destinatarioUf || scopedClientState || '',
+        productId: current.productId || activeProducts[0]?.id || '',
       }))
     } catch (error) {
+      if (requestId !== requestRef.current) return
       onError(error instanceof Error ? error.message : 'Nao foi possivel carregar produtos para simulacao.')
     } finally {
-      setIsLoading(false)
+      if (requestId === requestRef.current) setIsLoading(false)
     }
-  }, [client?.state, clientId, onError, organizationId])
+  }, [client, clientId, onError, organizationId])
 
   function updateField<Field extends keyof SimulationForm>(field: Field, value: SimulationForm[Field]) {
     setForm((current) => ({ ...current, [field]: value }))
@@ -122,6 +147,10 @@ export function FiscalSimulatorPanel({
 
     if (!organizationId || !clientId || !client) {
       onError('Selecione um cliente para simular impostos.')
+      return
+    }
+
+    if (!window.confirm(`Confirmar simulacao fiscal para ${companyLabel}?`)) {
       return
     }
 
@@ -139,8 +168,10 @@ export function FiscalSimulatorPanel({
     onFeedback('Calculando pre-visualizacao fiscal...')
 
     try {
+      const scopedOrganizationId = organizationId
+      const scopedClientId = clientId
       const preview = await previewNfeTaxes({
-        clientId,
+        clientId: scopedClientId,
         destinatario: {
           bairro: client.neighborhood,
           cep: client.cep,
@@ -163,7 +194,7 @@ export function FiscalSimulatorPanel({
         finalidade: form.finalidade,
         itens: [productToItem(selectedProduct, form.quantity, form.unitValue)],
         operationTypeCode: form.operationTypeCode,
-        organizationId,
+        organizationId: scopedOrganizationId,
       })
       setResult(preview)
       onFeedback(preview.message || 'Pre-visualizacao fiscal concluida.')
@@ -197,7 +228,7 @@ export function FiscalSimulatorPanel({
             Produto
             <select
               className="mt-2 h-12 w-full rounded-xl border border-slate-200 px-4 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-              disabled={isLoading}
+              disabled={isLoading || !organizationId || !clientId}
               onChange={(event) => updateField('productId', event.target.value)}
               value={form.productId}
             >
@@ -230,7 +261,7 @@ export function FiscalSimulatorPanel({
 
         <button
           className="mt-5 h-12 w-full rounded-xl bg-indigo-600 px-5 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
-          disabled={isCalculating}
+          disabled={isCalculating || !organizationId || !clientId}
           onClick={() => void handlePreview()}
           type="button"
         >

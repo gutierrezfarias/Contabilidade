@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { FiscalProductsPanel } from '../../components/fiscal/FiscalProductsPanel'
 import { FiscalReadinessTimeline } from '../../components/fiscal/FiscalReadinessTimeline'
@@ -225,8 +225,9 @@ function formatSecondaryCnaes(values: string[]) {
 }
 
 export function FiscalModule() {
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const requestedOrganizationId = searchParams.get('organization')
+  const requestedClientId = searchParams.get('clientId') ?? ''
   const [activeTab, setActiveTab] = useState<FiscalTab>('perfil')
   const [organizationId, setOrganizationId] = useState<string | null>(null)
   const [clients, setClients] = useState<AccountingClient[]>([])
@@ -253,6 +254,8 @@ export function FiscalModule() {
   const [isSyncing, setIsSyncing] = useState(false)
   const [isImportingNcm, setIsImportingNcm] = useState(false)
   const [selectedNcmFile, setSelectedNcmFile] = useState<File | null>(null)
+  const profileRequestRef = useRef(0)
+  const readinessRequestRef = useRef(0)
 
   const selectedClient = useMemo(
     () => clients.find((client) => client.id === clientId) ?? null,
@@ -273,6 +276,10 @@ export function FiscalModule() {
       }),
     [profile, selectedClient, syncStatus, timelineProducts, timelineRules],
   )
+  const hasSelectedCompany = Boolean(organizationId && clientId && selectedClient)
+  const selectedCompanyLabel = selectedClient
+    ? `${selectedClient.companyName} - ${selectedClient.cnpj || 'CNPJ nao informado'}`
+    : ''
 
   const loadSyncStatus = useCallback(async () => {
     setIsLoadingStatus(true)
@@ -289,19 +296,26 @@ export function FiscalModule() {
 
   const loadReadinessData = useCallback(async () => {
     if (!organizationId || !clientId) {
+      readinessRequestRef.current += 1
       setTimelineProducts([])
       setTimelineRules([])
       return
     }
 
+    const requestId = ++readinessRequestRef.current
+    const scopedOrganizationId = organizationId
+    const scopedClientId = clientId
+
     try {
       const [products, rules] = await Promise.all([
-        listFiscalProducts(organizationId, clientId),
-        listFiscalRules(organizationId, clientId),
+        listFiscalProducts(scopedOrganizationId, scopedClientId),
+        listFiscalRules(scopedOrganizationId, scopedClientId),
       ])
+      if (requestId !== readinessRequestRef.current) return
       setTimelineProducts(products)
       setTimelineRules(rules)
     } catch (loadError) {
+      if (requestId !== readinessRequestRef.current) return
       setError(loadError instanceof Error ? loadError.message : 'Nao foi possivel atualizar a jornada fiscal.')
     }
   }, [clientId, organizationId])
@@ -390,14 +404,50 @@ export function FiscalModule() {
     setProfile((current) => ({ ...current, [field]: value }))
   }
 
+  function resetCompanyScopedState() {
+    profileRequestRef.current += 1
+    readinessRequestRef.current += 1
+    setProfile(blankProfile)
+    setProfileId('')
+    setSecondaryCnaesText('')
+    setTimelineProducts([])
+    setTimelineRules([])
+    setEnrichmentSuggestions([])
+    setSelectedEnrichmentFields(new Set())
+    setFeedback('')
+    setError('')
+    setIsLoadingProfile(false)
+  }
+
+  function handleCompanyChange(nextClientId: string) {
+    resetCompanyScopedState()
+    setClientId(nextClientId)
+    const nextParams = new URLSearchParams(searchParams)
+    if (organizationId) nextParams.set('organization', organizationId)
+    if (nextClientId) nextParams.set('clientId', nextClientId)
+    else nextParams.delete('clientId')
+    setSearchParams(nextParams)
+  }
+
+  function confirmSelectedCompany(action: string) {
+    if (!organizationId || !clientId || !selectedClient) {
+      setError('Selecione uma empresa emissora antes de executar esta acao fiscal.')
+      return false
+    }
+
+    return window.confirm(`Confirmar ${action} para ${selectedCompanyLabel}?`)
+  }
+
   async function handleSaveProfile() {
     setFeedback('')
     setError('')
 
-    if (!organizationId || !clientId) {
-      setError('Selecione um cliente para salvar o perfil fiscal.')
+    if (!confirmSelectedCompany('salvar o perfil fiscal')) {
       return
     }
+    const scopedOrganizationId = organizationId
+    const scopedClientId = clientId
+    if (!scopedOrganizationId || !scopedClientId) return
 
     const validationErrors = validateFiscalProfile(profile)
     if (validationErrors.length > 0) {
@@ -409,7 +459,7 @@ export function FiscalModule() {
     setFeedback('Salvando perfil fiscal...')
 
     try {
-      const savedProfile = await upsertFiscalCompanyProfile(organizationId, clientId, {
+      const savedProfile = await upsertFiscalCompanyProfile(scopedOrganizationId, scopedClientId, {
         ...profile,
         secondaryCnaes: parseSecondaryCnaes(secondaryCnaesText),
       })
@@ -428,6 +478,7 @@ export function FiscalModule() {
 
   async function handleApproveProfile() {
     if (!profileId) return
+    if (!confirmSelectedCompany('aprovar o perfil fiscal')) return
 
     setFeedback('Aprovando perfil fiscal...')
     setError('')
@@ -446,6 +497,7 @@ export function FiscalModule() {
 
   async function handleRejectProfile() {
     if (!profileId) return
+    if (!confirmSelectedCompany('rejeitar o perfil fiscal')) return
 
     const reason = window.prompt('Informe o motivo da rejeicao do perfil fiscal:')
     if (!reason) return
@@ -495,10 +547,12 @@ export function FiscalModule() {
   }
 
   async function handleApplyEnrichment() {
-    if (!organizationId || !clientId) {
-      setError('Selecione um cliente para aplicar as sugestoes.')
+    if (!confirmSelectedCompany('aplicar sugestoes cadastrais ao perfil fiscal')) {
       return
     }
+    const scopedOrganizationId = organizationId
+    const scopedClientId = clientId
+    if (!scopedOrganizationId || !scopedClientId) return
 
     const selectedSuggestions = enrichmentSuggestions.filter(
       (suggestion) => selectedEnrichmentFields.has(suggestion.field) && !suggestion.blocked,
@@ -524,7 +578,7 @@ export function FiscalModule() {
       )
       const now = new Date().toISOString()
       const hasIbge = selectedSuggestions.some((suggestion) => suggestion.field === 'cityIbgeCode')
-      const savedProfile = await upsertFiscalCompanyProfile(organizationId, clientId, {
+      const savedProfile = await upsertFiscalCompanyProfile(scopedOrganizationId, scopedClientId, {
         ...nextProfile,
         dataOrigin: 'client_enrichment',
         ibgeResolvedAt: hasIbge ? now : nextProfile.ibgeResolvedAt,
@@ -538,8 +592,8 @@ export function FiscalModule() {
 
       try {
         await recordFiscalFieldSources(
-          organizationId,
-          clientId,
+          scopedOrganizationId,
+          scopedClientId,
           savedProfile.id,
           selectedSuggestions.map((suggestion) => ({
             confirmationStatus: 'confirmed',
@@ -588,7 +642,10 @@ export function FiscalModule() {
           const loadedClients = await listAccountingClients(id)
           if (!active) return
           setClients(loadedClients)
-          setClientId((current) => current || loadedClients[0]?.id || '')
+          const selectedFromUrl = requestedClientId
+            ? loadedClients.find((client) => client.id === requestedClientId)?.id ?? ''
+            : ''
+          setClientId(selectedFromUrl)
         })
         .catch((loadError) => {
           if (active) {
@@ -604,16 +661,21 @@ export function FiscalModule() {
       active = false
       window.clearTimeout(timer)
     }
-  }, [requestedOrganizationId])
+  }, [requestedClientId, requestedOrganizationId])
 
   useEffect(() => {
     let active = true
 
+    const requestId = ++profileRequestRef.current
+
     if (!organizationId || !clientId) {
       const timer = window.setTimeout(() => {
+        if (requestId !== profileRequestRef.current) return
         setProfile(blankProfile)
         setProfileId('')
         setSecondaryCnaesText('')
+        setEnrichmentSuggestions([])
+        setSelectedEnrichmentFields(new Set())
       }, 0)
       return () => {
         active = false
@@ -632,19 +694,19 @@ export function FiscalModule() {
 
       getFiscalCompanyProfile(organizationId, clientId)
         .then((loadedProfile) => {
-          if (!active) return
+          if (!active || requestId !== profileRequestRef.current) return
           const nextProfile = loadedProfile ? profileInputFromProfile(loadedProfile) : fallbackProfile
           setProfileId(loadedProfile?.id ?? '')
           setProfile(nextProfile)
           setSecondaryCnaesText(formatSecondaryCnaes(nextProfile.secondaryCnaes))
         })
         .catch((loadError) => {
-          if (active) {
+          if (active && requestId === profileRequestRef.current) {
             setError(loadError instanceof Error ? loadError.message : 'Nao foi possivel carregar o perfil fiscal.')
           }
         })
         .finally(() => {
-          if (active) setIsLoadingProfile(false)
+          if (active && requestId === profileRequestRef.current) setIsLoadingProfile(false)
         })
     }, 0)
 
@@ -705,6 +767,69 @@ export function FiscalModule() {
         </div>
       )}
 
+      <section className="mb-6 rounded-3xl border border-indigo-100 bg-white p-5 shadow-sm">
+        <div className="flex flex-col justify-between gap-5 xl:flex-row xl:items-start">
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-semibold uppercase tracking-[0.25em] text-indigo-600">Empresa emissora</p>
+            <h3 className="mt-2 text-2xl font-bold text-slate-900">
+              {selectedClient ? selectedClient.companyName : 'Selecione a empresa para configurar'}
+            </h3>
+            <p className="mt-2 text-sm leading-6 text-slate-500">
+              Todos os perfis, produtos, regras, simulacoes e pendencias abaixo pertencem somente a empresa selecionada.
+            </p>
+          </div>
+
+          <div className="w-full xl:max-w-xl">
+            <label className="text-sm font-semibold text-slate-700" htmlFor="fiscal-company-selector">
+              Selecionar empresa cliente <span className="text-rose-500">*</span>
+            </label>
+            <div className="mt-2 flex flex-col gap-3 sm:flex-row">
+              <select
+                className="h-12 flex-1 rounded-xl border border-slate-200 px-4 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                disabled={isLoadingClients}
+                id="fiscal-company-selector"
+                onChange={(event) => handleCompanyChange(event.target.value)}
+                value={clientId}
+              >
+                <option value="">{isLoadingClients ? 'Carregando empresas...' : 'Selecione uma empresa...'}</option>
+                {clients.map((client) => (
+                  <option key={client.id} value={client.id}>
+                    {client.companyName} - {client.cnpj || 'CNPJ nao informado'}
+                  </option>
+                ))}
+              </select>
+              <button
+                className="h-12 rounded-xl border border-indigo-200 px-5 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:text-indigo-300"
+                disabled={isLoadingClients}
+                onClick={() => document.getElementById('fiscal-company-selector')?.focus()}
+                type="button"
+              >
+                Trocar empresa
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-6">
+          <CompanyFact label="Razao social" value={selectedClient?.companyName} />
+          <CompanyFact label="Nome fantasia" value="" />
+          <CompanyFact label="CNPJ" value={selectedClient?.cnpj} />
+          <CompanyFact label="UF" value={selectedClient?.state} />
+          <CompanyFact label="Cidade" value={selectedClient?.city} />
+          <CompanyFact
+            label="Ambiente fiscal"
+            value={selectedClient ? (profile.defaultEnvironment === 'producao' ? 'Producao' : 'Homologacao') : ''}
+          />
+        </div>
+
+        {!hasSelectedCompany && (
+          <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm leading-6 text-amber-800">
+            Selecione uma empresa emissora para carregar perfil fiscal, produtos, regras e simulador. A tela nao possui
+            opcao "Todas as empresas" para evitar mistura de dados fiscais.
+          </div>
+        )}
+      </section>
+
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {moduleCards.map((card) => (
           <article className="rounded-3xl border border-slate-100 bg-white p-6 shadow-sm" key={card.title}>
@@ -735,7 +860,9 @@ export function FiscalModule() {
         ))}
       </nav>
 
-      {activeTab === 'perfil' && (
+      {activeTab === 'perfil' && !hasSelectedCompany && <CompanySelectionRequired />}
+
+      {activeTab === 'perfil' && hasSelectedCompany && (
         <section className="mt-6 rounded-3xl border border-slate-100 bg-white p-6 shadow-sm">
           <div className="flex flex-col justify-between gap-4 border-b border-slate-100 pb-5 lg:flex-row lg:items-start">
             <div>
@@ -748,7 +875,7 @@ export function FiscalModule() {
             <div className="flex flex-col gap-3 sm:flex-row">
               <button
                 className="h-11 rounded-xl border border-indigo-200 px-5 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:text-indigo-300"
-                disabled={isEnrichingProfile || isSavingProfile || isLoadingProfile || !clientId}
+                disabled={isEnrichingProfile || isSavingProfile || isLoadingProfile || !hasSelectedCompany}
                 onClick={() => void handlePreviewEnrichment()}
                 type="button"
               >
@@ -756,7 +883,7 @@ export function FiscalModule() {
               </button>
               <button
                 className="h-11 rounded-xl bg-indigo-600 px-5 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
-                disabled={isSavingProfile || isLoadingProfile || !clientId}
+                disabled={isSavingProfile || isLoadingProfile || !hasSelectedCompany}
                 onClick={() => void handleSaveProfile()}
                 type="button"
               >
@@ -766,24 +893,14 @@ export function FiscalModule() {
           </div>
 
           <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_260px]">
-            <div>
-              <label className="text-sm font-semibold text-slate-700" htmlFor="fiscal-client">
-                Cliente / empresa
-              </label>
-              <select
-                className="mt-2 h-12 w-full rounded-xl border border-slate-200 px-4 text-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-                disabled={isLoadingClients}
-                id="fiscal-client"
-                onChange={(event) => setClientId(event.target.value)}
-                value={clientId}
-              >
-                <option value="">{isLoadingClients ? 'Carregando clientes...' : 'Selecione...'}</option>
-                {clients.map((client) => (
-                  <option key={client.id} value={client.id}>
-                    {client.companyName} - {client.cnpj || 'CNPJ nao informado'}
-                  </option>
-                ))}
-              </select>
+            <div className="rounded-2xl border border-indigo-100 bg-indigo-50 p-4 text-sm leading-6 text-indigo-900">
+              <p className="font-semibold">Empresa ativa nesta configuracao</p>
+              <p className="mt-1">
+                {selectedClient?.companyName} | CNPJ {selectedClient?.cnpj || 'Nao informado'} | {selectedClient?.city || '-'} / {selectedClient?.state || '-'}
+              </p>
+              <p className="mt-1 text-xs">
+                Troque a empresa pelo seletor fixo no topo. Ao trocar, os dados desta aba sao limpos e recarregados.
+              </p>
             </div>
 
             <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">
@@ -1286,9 +1403,12 @@ export function FiscalModule() {
       </section>
       )}
 
-      {activeTab === 'produtos' && (
+      {activeTab === 'produtos' && !hasSelectedCompany && <CompanySelectionRequired />}
+
+      {activeTab === 'produtos' && hasSelectedCompany && (
         <FiscalProductsPanel
           clientId={clientId}
+          companyLabel={selectedCompanyLabel}
           onChanged={() => void loadReadinessData()}
           onError={setError}
           onFeedback={setFeedback}
@@ -1296,9 +1416,12 @@ export function FiscalModule() {
         />
       )}
 
-      {activeTab === 'regras' && (
+      {activeTab === 'regras' && !hasSelectedCompany && <CompanySelectionRequired />}
+
+      {activeTab === 'regras' && hasSelectedCompany && (
         <FiscalRulesPanel
           clientId={clientId}
+          companyLabel={selectedCompanyLabel}
           onChanged={() => void loadReadinessData()}
           onError={setError}
           onFeedback={setFeedback}
@@ -1306,10 +1429,13 @@ export function FiscalModule() {
         />
       )}
 
-      {activeTab === 'simulador' && (
+      {activeTab === 'simulador' && !hasSelectedCompany && <CompanySelectionRequired />}
+
+      {activeTab === 'simulador' && hasSelectedCompany && (
         <FiscalSimulatorPanel
           client={selectedClient}
           clientId={clientId}
+          companyLabel={selectedCompanyLabel}
           onError={setError}
           onFeedback={setFeedback}
           organizationId={organizationId}
@@ -1324,5 +1450,27 @@ export function FiscalModule() {
         </p>
       </section>
     </DashboardLayout>
+  )
+}
+
+function CompanyFact({ label, value }: { label: string; value?: string | null }) {
+  return (
+    <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
+      <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">{label}</p>
+      <p className="mt-1 min-h-5 font-semibold text-slate-900">{value?.trim() || 'Nao informado'}</p>
+    </div>
+  )
+}
+
+function CompanySelectionRequired() {
+  return (
+    <section className="mt-6 rounded-3xl border border-amber-200 bg-amber-50 p-6 text-sm leading-6 text-amber-900">
+      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-600">Empresa obrigatoria</p>
+      <h3 className="mt-2 text-xl font-bold">Selecione a empresa emissora para continuar</h3>
+      <p className="mt-2 max-w-3xl">
+        Esta etapa fica bloqueada ate que uma empresa cliente seja escolhida no seletor superior. Isso impede edicao,
+        simulacao ou emissao usando dados fiscais de outra empresa.
+      </p>
+    </section>
   )
 }

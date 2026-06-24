@@ -199,6 +199,234 @@ public sealed class FiscalReadinessNcmEnrichmentTests
         Assert.DoesNotContain("@ts-nocheck", googleBusiness);
     }
 
+    [Fact]
+    public void Frontend_fiscal_module_requires_explicit_company_selector_and_preserves_url_context()
+    {
+        var fiscalModule = Normalize(ReadFile("src", "pages", "accounting", "FiscalModule.tsx"));
+
+        Assert.Contains("id=fiscal-company-selector", fiscalModule);
+        Assert.Contains("empresa emissora", fiscalModule);
+        Assert.Contains("trocar empresa", fiscalModule);
+        Assert.Contains("hasselectedcompany", fiscalModule);
+        Assert.Contains("companyselectionrequired", fiscalModule);
+        Assert.Contains("companyfact", fiscalModule);
+        Assert.Contains("requestedclientid", fiscalModule);
+        Assert.Contains("selectedfromurl", fiscalModule);
+        Assert.Contains("nextparams.set('organization', organizationid)", fiscalModule);
+        Assert.Contains("nextparams.set('clientid', nextclientid)", fiscalModule);
+        Assert.DoesNotContain("loadedclients[0]", fiscalModule);
+    }
+
+    [Fact]
+    public void Frontend_fiscal_company_switch_clears_scoped_state_and_ignores_stale_responses()
+    {
+        var fiscalModule = Normalize(ReadFile("src", "pages", "accounting", "FiscalModule.tsx"));
+        var productsPanel = Normalize(ReadFile("src", "components", "fiscal", "FiscalProductsPanel.tsx"));
+        var rulesPanel = Normalize(ReadFile("src", "components", "fiscal", "FiscalRulesPanel.tsx"));
+        var simulatorPanel = Normalize(ReadFile("src", "components", "fiscal", "FiscalSimulatorPanel.tsx"));
+
+        Assert.Contains("resetcompanyscopedstate", fiscalModule);
+        Assert.Contains("profilerequestref", fiscalModule);
+        Assert.Contains("readinessrequestref", fiscalModule);
+        Assert.Contains("requestid !== profilerequestref.current", fiscalModule);
+        Assert.Contains("requestid !== readinessrequestref.current", fiscalModule);
+        Assert.Contains("settimelineproducts([])", fiscalModule);
+        Assert.Contains("settimelinerules([])", fiscalModule);
+
+        foreach (var panel in new[] { productsPanel, rulesPanel, simulatorPanel })
+        {
+            Assert.Contains("requestref.current += 1", panel);
+            Assert.Contains("requestid !== requestref.current", panel);
+            Assert.Contains("setproducts([])", panel);
+        }
+
+        Assert.Contains("setrules([])", rulesPanel);
+        Assert.Contains("setresult(null)", simulatorPanel);
+    }
+
+    [Fact]
+    public void Frontend_fiscal_children_block_operations_without_company_and_confirm_critical_actions()
+    {
+        var fiscalModule = Normalize(ReadFile("src", "pages", "accounting", "FiscalModule.tsx"));
+        var productsPanel = Normalize(ReadFile("src", "components", "fiscal", "FiscalProductsPanel.tsx"));
+        var rulesPanel = Normalize(ReadFile("src", "components", "fiscal", "FiscalRulesPanel.tsx"));
+        var simulatorPanel = Normalize(ReadFile("src", "components", "fiscal", "FiscalSimulatorPanel.tsx"));
+
+        Assert.Contains("!hasselectedcompany && <companyselectionrequired", fiscalModule);
+        Assert.Contains("activetab === 'ncm'", fiscalModule);
+        Assert.Contains("companylabel={selectedcompanylabel}", fiscalModule);
+
+        foreach (var panel in new[] { productsPanel, rulesPanel, simulatorPanel })
+        {
+            Assert.Contains("companylabel", panel);
+            Assert.Contains("window.confirm", panel);
+            Assert.Contains("!organizationid || !clientid", panel);
+        }
+
+        Assert.Contains("confirmselectedcompany('salvar o perfil fiscal')", fiscalModule);
+        Assert.Contains("confirmselectedcompany('aprovar o perfil fiscal')", fiscalModule);
+        Assert.Contains("confirmselectedcompany('rejeitar o perfil fiscal')", fiscalModule);
+        Assert.Contains("confirmselectedcompany('aplicar sugestoes cadastrais ao perfil fiscal')", fiscalModule);
+    }
+
+    [Fact]
+    public void Backend_tax_preview_keeps_company_scope_and_ncm_catalog_global()
+    {
+        var engine = Normalize(ReadFile("backend", "nfe-api", "Services", "FiscalRuleEngineService.cs"));
+        var backendService = Normalize(ReadFile("src", "services", "fiscalBackendService.ts"));
+
+        Assert.Contains("ensureorganizationaccessasync(userid, request.organizationid", engine);
+        Assert.Contains("getcompanyasync(request.organizationid, request.clientid", engine);
+        Assert.Contains("getfiscalprofileasync(request.organizationid, request.clientid", engine);
+        Assert.Contains("listfiscalproductsasync(request.organizationid, request.clientid", engine);
+        Assert.Contains("listrulesasync(request.organizationid, request.clientid", engine);
+        Assert.Contains("previewnfetaxes(input: nfetaxpreviewrequest)", backendService);
+        Assert.Contains("/api/nfe/tax-preview", backendService);
+        Assert.Contains("/api/reference-data/ncm/search?", backendService);
+        var ncmSearchIndex = backendService.IndexOf("/api/reference-data/ncm/search?", StringComparison.Ordinal);
+        var ncmSearchFragment = backendService.Substring(ncmSearchIndex, Math.Min(140, backendService.Length - ncmSearchIndex));
+        Assert.DoesNotContain("organizationid", ncmSearchFragment);
+    }
+
+    [Fact]
+    public void Client_management_lists_fiscal_summary_per_company_without_global_mixing()
+    {
+        var clientManagement = Normalize(ReadFile("src", "pages", "accounting", "ClientManagement.tsx"));
+
+        Assert.Contains("fiscalclientsummaries", clientManagement);
+        Assert.Contains("buildfiscalclientsummary", clientManagement);
+        Assert.Contains("fiscalclientsummarycard", clientManagement);
+        Assert.Contains("getfiscalcompanyprofile(scopedorganizationid, client.id)", clientManagement);
+        Assert.Contains("listfiscalproducts(scopedorganizationid, client.id)", clientManagement);
+        Assert.Contains("listfiscalrules(scopedorganizationid, client.id)", clientManagement);
+        Assert.Contains("listcertificates(client.id)", clientManagement);
+        Assert.Contains("pronta para emissao", clientManagement);
+        Assert.Contains("configuracao parcial", clientManagement);
+        Assert.Contains("bloqueada", clientManagement);
+        Assert.Contains("certificado ausente", clientManagement);
+        Assert.Contains("certificado vencido", clientManagement);
+        Assert.Contains("perfil fiscal pendente", clientManagement);
+        Assert.Contains("produtos sem tributacao", clientManagement);
+        Assert.Contains("regras fiscais pendentes", clientManagement);
+    }
+
+    [Fact]
+    public void Fiscal_audit_completion_reuses_existing_table_and_adds_complete_fields()
+    {
+        var sql = Normalize(ReadFile("supabase", "migrations", "20260623_fiscal_audit_completion.sql"));
+
+        Assert.Contains("alter table public.fiscal_audit_logs", sql);
+        Assert.Contains("add column if not exists changed_fields", sql);
+        Assert.Contains("add column if not exists correlation_id", sql);
+        Assert.Contains("fiscal_audit_logs_action_idx", sql);
+        Assert.Contains("fiscal_audit_logs_correlation_idx", sql);
+        Assert.DoesNotContain("create table if not exists public.fiscal_audit_logs", sql);
+        Assert.DoesNotContain("drop table", sql);
+        Assert.DoesNotContain("truncate table", sql);
+    }
+
+    [Fact]
+    public void Fiscal_audit_completion_sanitizes_sensitive_payloads_and_tracks_changed_fields()
+    {
+        var sql = Normalize(ReadFile("supabase", "migrations", "20260623_fiscal_audit_completion.sql"));
+
+        Assert.Contains("cont_hub_sanitize_fiscal_audit_data", sql);
+        Assert.Contains("senha|password|token|secret", sql);
+        Assert.Contains("pfx|p12|pkcs", sql);
+        Assert.Contains("xml|soap|envelope", sql);
+        Assert.Contains("[redacted]", sql);
+        Assert.Contains("cont_hub_jsonb_changed_fields", sql);
+        Assert.Contains("old_data := public.cont_hub_sanitize_fiscal_audit_data", sql);
+        Assert.Contains("new_data := public.cont_hub_sanitize_fiscal_audit_data", sql);
+        Assert.Contains("new.changed_fields", sql);
+    }
+
+    [Fact]
+    public void Fiscal_audit_completion_enforces_scope_and_least_privilege()
+    {
+        var sql = Normalize(ReadFile("supabase", "migrations", "20260623_fiscal_audit_completion.sql"));
+
+        Assert.Contains("cont_hub_validate_fiscal_audit_log", sql);
+        Assert.Contains("c.id = new.client_id", sql);
+        Assert.Contains("c.organization_id = new.organization_id", sql);
+        Assert.Contains("drop policy if exists organization insert fiscal audit logs", sql);
+        Assert.Contains("create policy organization read fiscal audit logs", sql);
+        Assert.Contains("revoke all on public.fiscal_audit_logs from anon", sql);
+        Assert.Contains("revoke insert, update, delete, truncate, references, trigger on public.fiscal_audit_logs from authenticated", sql);
+        Assert.Contains("grant select on public.fiscal_audit_logs to authenticated", sql);
+        Assert.Contains("grant all privileges on public.fiscal_audit_logs to service_role, postgres", sql);
+    }
+
+    [Fact]
+    public void Fiscal_audit_completion_covers_fiscal_entities_and_avoids_approval_duplicates()
+    {
+        var sql = Normalize(ReadFile("supabase", "migrations", "20260623_fiscal_audit_completion.sql"));
+
+        foreach (var triggerName in new[]
+        {
+            "fiscal_profile_audit_trigger",
+            "fiscal_product_audit_trigger",
+            "fiscal_product_group_audit_trigger",
+            "fiscal_operation_type_audit_trigger",
+            "fiscal_benefit_audit_trigger",
+            "custom_cfop_audit_trigger",
+            "fiscal_rule_audit_trigger",
+            "fiscal_rule_version_audit_trigger",
+            "fiscal_conflict_audit_trigger",
+            "fiscal_simulation_audit_trigger"
+        })
+        {
+            Assert.Contains(triggerName, sql);
+        }
+
+        Assert.Contains("set_config('cont_hub.audit.action', 'approve'", sql);
+        Assert.Contains("set_config('cont_hub.audit.action', 'reject'", sql);
+        Assert.Contains("rpc:approve_fiscal_profile", sql);
+        Assert.Contains("rpc:reject_fiscal_profile", sql);
+        Assert.Contains("rpc:approve_fiscal_rule", sql);
+        Assert.Contains("rpc:reject_fiscal_rule", sql);
+        Assert.DoesNotContain("profile.organization_id, profile.client_id, fiscal_company_profiles, profile.id", sql);
+        Assert.DoesNotContain("rule_row.organization_id, rule_row.client_id, fiscal_rules, rule_row.id", sql);
+    }
+
+    [Fact]
+    public void Fiscal_audit_completion_has_read_only_diagnostic()
+    {
+        var diagnostic = Normalize(ReadFile("supabase", "diagnostics", "20260623_fiscal_audit_completion_diagnostic.sql"));
+
+        Assert.Contains("01_columns", diagnostic);
+        Assert.Contains("02_rls", diagnostic);
+        Assert.Contains("03_policies", diagnostic);
+        Assert.Contains("04_privileges", diagnostic);
+        Assert.Contains("05_unexpected_frontend_write_grants", diagnostic);
+        Assert.Contains("07_triggers", diagnostic);
+        Assert.Contains("08_invalid_client_scope", diagnostic);
+        Assert.Contains("09_sensitive_payload_probe", diagnostic);
+        Assert.DoesNotContain("insert into", diagnostic);
+        Assert.DoesNotContain("update public.", diagnostic);
+        Assert.DoesNotContain("delete from", diagnostic);
+        Assert.DoesNotContain("drop ", diagnostic);
+    }
+
+    [Fact]
+    public void Backend_tax_preview_records_safe_fiscal_simulation_audit()
+    {
+        var engine = Normalize(ReadFile("backend", "nfe-api", "Services", "FiscalRuleEngineService.cs"));
+        var repository = Normalize(ReadFile("backend", "nfe-api", "Services", "SupabaseFiscalRepository.cs"));
+        var models = Normalize(ReadFile("backend", "nfe-api", "Models", "FiscalModels.cs"));
+
+        Assert.Contains("savepreviewauditasync", engine);
+        Assert.Contains("simulation_blocked", engine);
+        Assert.Contains("backend:nfe-tax-preview", engine);
+        Assert.Contains("correlationid = guid.newguid().tostring(n)", engine);
+        Assert.Contains("appliedruleids = result.appliedruleids", engine);
+        Assert.Contains("blockingerrors = result.blockingerrors.select(safeblockerror).tolist()", engine);
+        Assert.Contains("correlation_id = string.isnullorwhitespace(audit.correlationid)", repository);
+        Assert.Contains("public string correlationid", models);
+        Assert.DoesNotContain("certificatesenha", engine);
+        Assert.DoesNotContain("pfx", engine);
+    }
+
     private static string Normalize(string value)
     {
         return value.Replace("\"", "").ToLowerInvariant();

@@ -28,6 +28,7 @@ import {
 } from '../../services/accountingRepository'
 import { findAddressDetailsByCep } from '../../services/cepService'
 import type { ImportedClientDocument, ImportedClientDocumentFile } from '../../services/documentImportService'
+import { getFiscalCompanyProfile, listFiscalProducts, listFiscalRules } from '../../services/fiscalRepository'
 import { resolveOrganizationId } from '../../services/platformService'
 import type {
   AccountingClient,
@@ -40,12 +41,18 @@ import type {
   ClientTaxRegime,
   DigitalCertificate,
 } from '../../types/accounting'
+import type { FiscalCompanyProfile, FiscalProduct, FiscalRule } from '../../types/fiscal'
 import { formatCnpj, formatPhone, formatPostalCode, isValidEmail } from '../../utils/formatters'
 
 type ManagementTab = 'cadastros' | 'pagamentos' | 'certificados'
 type ClientForm = Omit<AccountingClient, 'id' | 'organizationId' | 'active'>
 type ClientTextField = Exclude<keyof ClientForm, 'isMonthly' | 'monthlyFee'>
 type SavingAction = 'client' | 'certificate' | 'clients-import' | 'payments-import' | null
+type FiscalClientSummary = {
+  label: string
+  tone: 'emerald' | 'amber' | 'rose' | 'slate'
+  issues: string[]
+}
 
 const blankClient: ClientForm = {
   companyName: '',
@@ -144,6 +151,13 @@ interface ClientManagementProps {
 
 const formatCurrency = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
 
+const fiscalSummaryToneClasses: Record<FiscalClientSummary['tone'], string> = {
+  amber: 'border-amber-200 bg-amber-50 text-amber-800',
+  emerald: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+  rose: 'border-rose-200 bg-rose-50 text-rose-800',
+  slate: 'border-slate-200 bg-slate-50 text-slate-600',
+}
+
 function downloadCsv(fileName: string, content: string) {
   const file = new Blob([`\uFEFF${content}`], { type: 'text/csv;charset=utf-8;' })
   const url = window.URL.createObjectURL(file)
@@ -192,6 +206,53 @@ function readFileAsDataUrl(file: File) {
   })
 }
 
+function certificateState(certificates: DigitalCertificate[]) {
+  const activeCertificate = certificates.find((certificate) => certificate.status === 'Ativo')
+
+  if (!activeCertificate) return 'Certificado ausente'
+
+  const validUntil = new Date(activeCertificate.validUntil)
+  if (Number.isNaN(validUntil.getTime())) return ''
+
+  const today = new Date()
+  const daysUntilExpiration = Math.ceil((validUntil.getTime() - today.getTime()) / 86_400_000)
+
+  if (daysUntilExpiration < 0) return 'Certificado vencido'
+  if (daysUntilExpiration <= 30) return 'Certificado proximo do vencimento'
+  return ''
+}
+
+function buildFiscalClientSummary(
+  profile: FiscalCompanyProfile | null,
+  products: FiscalProduct[],
+  rules: FiscalRule[],
+  certificates: DigitalCertificate[],
+): FiscalClientSummary {
+  const issues = [
+    certificateState(certificates),
+    !profile && 'Perfil fiscal pendente',
+    profile?.approvalStatus && profile.approvalStatus !== 'Aprovado' && 'Perfil fiscal pendente',
+    products.filter((product) => product.active).length === 0 && 'Produtos sem tributacao',
+    products.some((product) => product.active && product.itemType !== 'Servico' && product.ncm.replace(/\D/g, '').length !== 8) &&
+      'Produtos sem tributacao',
+    rules.filter((rule) => rule.active && rule.approvalStatus === 'Aprovada').length === 0 && 'Regras fiscais pendentes',
+  ].filter(Boolean) as string[]
+
+  if (issues.length === 0) {
+    return { issues: [], label: 'Pronta para emissao', tone: 'emerald' }
+  }
+
+  if (issues.some((issue) => issue.includes('vencido') || issue.includes('ausente'))) {
+    return { issues, label: 'Bloqueada', tone: 'rose' }
+  }
+
+  if (issues.some((issue) => issue.includes('proximo'))) {
+    return { issues, label: 'Atencao fiscal', tone: 'amber' }
+  }
+
+  return { issues, label: 'Configuracao parcial', tone: 'amber' }
+}
+
 export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementProps) {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -218,6 +279,7 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
   const [year, setYear] = useState(currentDate.getFullYear())
   const [feedback, setFeedback] = useState('')
   const [error, setError] = useState('')
+  const [fiscalClientSummaries, setFiscalClientSummaries] = useState<Record<string, FiscalClientSummary>>({})
   const [isSearchingCep, setIsSearchingCep] = useState(false)
   const [savingAction, setSavingAction] = useState<SavingAction>(null)
   const [isLoadingCertificateClient, setIsLoadingCertificateClient] = useState(false)
@@ -241,6 +303,7 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
   const [showCertificatePassword, setShowCertificatePassword] = useState(false)
   const [visibleCertificatePasswordId, setVisibleCertificatePasswordId] = useState<string | null>(null)
   const [enabledServices, setEnabledServices] = useState<CertificateService['serviceCode'][]>([])
+  const fiscalSummaryRequestRef = useRef(0)
   const years = [currentDate.getFullYear(), currentDate.getFullYear() - 1]
   const {
     page: clientsPage,
@@ -367,6 +430,53 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
       active = false
     }
   }, [selectedClientId])
+
+  useEffect(() => {
+    const requestId = ++fiscalSummaryRequestRef.current
+
+    if (!organizationId || clients.length === 0) {
+      const clearTimer = window.setTimeout(() => {
+        if (requestId === fiscalSummaryRequestRef.current) setFiscalClientSummaries({})
+      }, 0)
+
+      return () => window.clearTimeout(clearTimer)
+    }
+
+    const clientsSnapshot = clients
+    const scopedOrganizationId = organizationId
+
+    async function loadFiscalSummaries() {
+      const entries = await Promise.all(
+        clientsSnapshot.map(async (client) => {
+          try {
+            const [profile, products, rules, clientCertificates] = await Promise.all([
+              getFiscalCompanyProfile(scopedOrganizationId, client.id),
+              listFiscalProducts(scopedOrganizationId, client.id),
+              listFiscalRules(scopedOrganizationId, client.id),
+              listCertificates(client.id),
+            ])
+
+            return [client.id, buildFiscalClientSummary(profile, products, rules, clientCertificates)] as const
+          } catch {
+            return [
+              client.id,
+              {
+                issues: ['Resumo fiscal nao carregado'],
+                label: 'Nao verificado',
+                tone: 'slate',
+              },
+            ] as const
+          }
+        }),
+      )
+
+      if (requestId === fiscalSummaryRequestRef.current) {
+        setFiscalClientSummaries(Object.fromEntries(entries))
+      }
+    }
+
+    void loadFiscalSummaries()
+  }, [clients, organizationId])
 
   function updateField(field: ClientTextField, value: string) {
     const nextValue =
@@ -1431,6 +1541,7 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
                           {[client.mainCnae && `CNAE ${client.mainCnae}`, client.legalNature].filter(Boolean).join(' - ')}
                         </p>
                       )}
+                      <FiscalClientSummaryCard summary={fiscalClientSummaries[client.id]} />
                     </div>
                   </div>
                   <div className="mt-4 flex gap-4 text-sm font-semibold">
@@ -1720,6 +1831,28 @@ export function ClientManagement({ initialTab = 'cadastros' }: ClientManagementP
         </div>
       )}
     </DashboardLayout>
+  )
+}
+
+function FiscalClientSummaryCard({ summary }: { summary?: FiscalClientSummary }) {
+  if (!summary) {
+    return (
+      <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-500">
+        Resumo fiscal carregando...
+      </div>
+    )
+  }
+
+  return (
+    <div className={`mt-3 rounded-xl border px-3 py-2 text-xs ${fiscalSummaryToneClasses[summary.tone]}`}>
+      <p className="font-bold">{summary.label}</p>
+      {summary.issues.length > 0 && (
+        <p className="mt-1 leading-5">
+          {summary.issues.slice(0, 4).join(' | ')}
+          {summary.issues.length > 4 ? ` | +${summary.issues.length - 4} pendencia(s)` : ''}
+        </p>
+      )}
+    </div>
   )
 }
 

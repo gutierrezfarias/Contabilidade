@@ -59,7 +59,7 @@ public sealed class FiscalRuleEngineService(
                 .Distinct()
                 .ToList();
 
-            return new NfeTaxPreviewResult
+            var result = new NfeTaxPreviewResult
             {
                 AppliedRuleIds = items
                     .Select(item => item.AppliedRuleId)
@@ -80,6 +80,9 @@ public sealed class FiscalRuleEngineService(
                 Success = errors.Count == 0,
                 Warnings = warnings.Distinct().ToList()
             };
+
+            await SavePreviewAuditAsync(request, userId, result, cancellationToken);
+            return result;
         }
         catch (UnauthorizedAccessException)
         {
@@ -88,6 +91,51 @@ public sealed class FiscalRuleEngineService(
         catch (Exception error)
         {
             return Fail(Block("FISCAL_ENGINE_ERROR", error.Message, "", "", "", "Revise a configuracao fiscal e tente novamente."));
+        }
+    }
+
+    private async Task SavePreviewAuditAsync(
+        NfeTaxPreviewRequest request,
+        string userId,
+        NfeTaxPreviewResult result,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await fiscalRepository.SaveAuditAsync(
+                new FiscalAuditWrite
+                {
+                    Action = result.Success ? "simulation" : "simulation_blocked",
+                    ClientId = request.ClientId,
+                    CorrelationId = Guid.NewGuid().ToString("N"),
+                    CreatedBy = userId,
+                    EntityType = "nfe_tax_preview",
+                    Metadata = new
+                    {
+                        request.Direction,
+                        request.Finalidade,
+                        result.FiscalProfileStatus,
+                        result.Message,
+                        blockingErrors = result.BlockingErrors.Select(SafeBlockError).ToList()
+                    },
+                    NewData = new
+                    {
+                        result.Status,
+                        result.Success,
+                        itemCount = request.Itens.Count,
+                        appliedRuleIds = result.AppliedRuleIds,
+                        warningCount = result.Warnings.Count,
+                        errorCount = result.Errors.Count
+                    },
+                    OrganizationId = request.OrganizationId,
+                    Origin = "backend:nfe-tax-preview",
+                    Reason = result.Message
+                },
+                cancellationToken);
+        }
+        catch
+        {
+            // Auditoria nao deve impedir o retorno da simulacao fiscal ao usuario.
         }
     }
 
@@ -117,6 +165,7 @@ public sealed class FiscalRuleEngineService(
                         fiscalResult.Message,
                         blockingErrors = fiscalResult.BlockingErrors.Select(SafeBlockError).ToList()
                     },
+                    CorrelationId = Guid.NewGuid().ToString("N"),
                     NewData = new
                     {
                         request.Nota.NaturezaOperacao,
