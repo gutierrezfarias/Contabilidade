@@ -34,12 +34,22 @@ public static class SerproDomainRules
 {
     public const string ManagedMode = "cont_hub_managed";
     public const string DirectMode = "direct_serpro";
+    public const string LocalAgentMode = "local_agent";
 
     public static SerproResolvedMode ResolveMode(
         SerproOrganizationSettingsDto settings,
         SerproCredentialStatusDto managedCredential,
-        SerproCredentialStatusDto directCredential)
+        SerproCredentialStatusDto directCredential,
+        SerproLocalAgentDto? localAgent = null)
     {
+        if (settings.AccessMode == LocalAgentMode)
+        {
+            var connected = localAgent?.Status == "connected";
+            return connected
+                ? new SerproResolvedMode(ManagedMode, LocalAgentMode, true, false, "")
+                : Blocked(ManagedMode, LocalAgentMode, "Robo local desconectado ou ainda nao pareado.");
+        }
+
         if (settings.BillingMode == DirectMode)
         {
             if (!settings.DirectModeEnabled)

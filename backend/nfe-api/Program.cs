@@ -1619,6 +1619,53 @@ app.MapGet("/api/admin/serpro/pricing", async (
     }
 });
 
+app.MapGet("/api/admin/serpro/plans", async (
+    HttpContext httpContext,
+    SupabaseNfeRepository authRepository,
+    SupabaseSerproRepository serproRepository,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var userId = await authRepository.RequireUserAsync(httpContext.Request.Headers.Authorization.ToString(), cancellationToken);
+        await serproRepository.EnsurePlatformAdminAsync(userId, cancellationToken);
+        return Results.Ok(new { ok = true, plans = await serproRepository.ListContractPlansAsync(true, cancellationToken) });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapPut("/api/admin/serpro/plans/{planCode}", async (
+    string planCode,
+    SerproContractPlanInput input,
+    HttpContext httpContext,
+    SupabaseNfeRepository authRepository,
+    SupabaseSerproRepository serproRepository,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var userId = await authRepository.RequireUserAsync(httpContext.Request.Headers.Authorization.ToString(), cancellationToken);
+        await serproRepository.EnsurePlatformAdminAsync(userId, cancellationToken);
+        var plan = await serproRepository.UpsertContractPlanAsync(input with { Code = planCode }, userId, cancellationToken);
+        return Results.Ok(new { ok = true, plan });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
 app.MapGet("/api/admin/serpro/organizations", async (
     HttpContext httpContext,
     SupabaseNfeRepository authRepository,
@@ -1655,7 +1702,8 @@ app.MapGet("/api/serpro/settings", async (
         var settings = await serproRepository.GetOrganizationSettingsAsync(organizationId, cancellationToken);
         var managed = await serproRepository.GetManagedCredentialStatusAsync(cancellationToken);
         var direct = await serproRepository.GetDirectCredentialStatusAsync(organizationId, settings.Environment, cancellationToken);
-        var resolved = SerproDomainRules.ResolveMode(settings, managed, direct);
+        var localAgent = await serproRepository.GetLocalAgentAsync(organizationId, cancellationToken);
+        var resolved = SerproDomainRules.ResolveMode(settings, managed, direct, localAgent);
         return Results.Ok(new
         {
             ok = true,
@@ -1663,11 +1711,47 @@ app.MapGet("/api/serpro/settings", async (
             managedCredential = managed,
             directCredential = direct,
             wallet = await serproRepository.GetWalletAsync(organizationId, cancellationToken),
+            walletTransactions = await serproRepository.ListWalletTransactionsAsync(organizationId, cancellationToken),
+            plans = await serproRepository.ListContractPlansAsync(false, cancellationToken),
+            localAgent,
             services = await serproRepository.ListCatalogAsync(cancellationToken),
             organizationServices = await serproRepository.ListOrganizationServicesAsync(organizationId, cancellationToken),
             authorizations = await serproRepository.ListAuthorizationsAsync(organizationId, cancellationToken),
+            usage = await serproRepository.ListUsageAsync(organizationId, cancellationToken),
+            requests = await serproRepository.ListRequestsAsync(organizationId, cancellationToken),
+            auditLogs = await serproRepository.ListAuditLogsAsync(organizationId, cancellationToken),
+            manualImports = await serproRepository.ListManualImportBatchesAsync(organizationId, cancellationToken),
             resolved
         });
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+    catch (Exception error)
+    {
+        return Results.BadRequest(new { ok = false, error = error.Message });
+    }
+});
+
+app.MapPost("/api/serpro/local-agent/pairing-key", async (
+    SerproPairingKeyInput input,
+    HttpContext httpContext,
+    SupabaseNfeRepository authRepository,
+    SupabaseSerproRepository serproRepository,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var userId = await authRepository.RequireUserAsync(httpContext.Request.Headers.Authorization.ToString(), cancellationToken);
+        await authRepository.EnsureOrganizationAccessAsync(userId, input.OrganizationId, cancellationToken);
+        var settings = await serproRepository.GetOrganizationSettingsAsync(input.OrganizationId, cancellationToken);
+        if (settings.PlanCode != "cont_hub_local_agent")
+        {
+            return Results.BadRequest(new { ok = false, error = "Selecione o plano Robo CONT HUB local antes de gerar a chave." });
+        }
+
+        return Results.Ok(await serproRepository.RenewLocalAgentPairingKeyAsync(input.OrganizationId, userId, cancellationToken));
     }
     catch (UnauthorizedAccessException)
     {
@@ -1841,7 +1925,8 @@ app.MapGet("/api/revenue/status", async (
         var settings = await serproRepository.GetOrganizationSettingsAsync(organizationId, cancellationToken);
         var managed = await serproRepository.GetManagedCredentialStatusAsync(cancellationToken);
         var direct = await serproRepository.GetDirectCredentialStatusAsync(organizationId, settings.Environment, cancellationToken);
-        return Results.Ok(new { ok = true, status = SerproDomainRules.ResolveMode(settings, managed, direct) });
+        var localAgent = await serproRepository.GetLocalAgentAsync(organizationId, cancellationToken);
+        return Results.Ok(new { ok = true, status = SerproDomainRules.ResolveMode(settings, managed, direct, localAgent) });
     }
     catch (UnauthorizedAccessException)
     {

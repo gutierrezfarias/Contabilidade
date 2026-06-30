@@ -68,6 +68,32 @@ public sealed class SerproDomainRulesTests
         Assert.False(SerproDomainRules.HasEnoughWalletBalance(wallet, 31));
     }
 
+    [Fact]
+    public void ResolveMode_uses_connected_local_agent_without_wallet_or_serpro_secret()
+    {
+        var settings = new SerproOrganizationSettingsDto(
+            "org-1",
+            "cont_hub_managed",
+            "local_agent",
+            "homologacao",
+            "active",
+            false,
+            false,
+            false,
+            0,
+            500,
+            "",
+            "",
+            "cont_hub_local_agent");
+        var localAgent = new SerproLocalAgentDto("org-1", "connected", "cont-hub", null, null, "1.0.0", null, null, "");
+
+        var result = SerproDomainRules.ResolveMode(settings, Credential("cont_hub", false), Credential("contador", false), localAgent);
+
+        Assert.True(result.CredentialsReady);
+        Assert.False(result.WalletRequired);
+        Assert.Equal("local_agent", result.CredentialOwner);
+    }
+
     private static SerproOrganizationSettingsDto Settings(
         string mode,
         bool managedEnabled = false,

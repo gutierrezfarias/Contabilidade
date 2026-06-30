@@ -12,7 +12,38 @@ public sealed record SerproServiceDto(
     bool RequiresAuthorization,
     bool SupportsManagedMode,
     bool SupportsDirectMode,
-    string Status);
+    string Status,
+    bool SupportsLocalAgent = false,
+    bool SupportsManualImport = true,
+    bool ConsumesCredit = true);
+
+public sealed record SerproContractPlanDto(
+    string Code,
+    string CommercialName,
+    decimal MonthlyPrice,
+    string Description,
+    bool Active,
+    List<string> AllowedServiceIds,
+    int DefaultDailyLimit,
+    bool AllowsFallback,
+    bool AllowsHomologation,
+    bool AllowsProduction,
+    int DisplayOrder,
+    string InstallerUrl);
+
+public sealed record SerproContractPlanInput(
+    string Code,
+    string CommercialName,
+    decimal MonthlyPrice,
+    string Description,
+    bool Active,
+    List<string> AllowedServiceIds,
+    int DefaultDailyLimit,
+    bool AllowsFallback,
+    bool AllowsHomologation,
+    bool AllowsProduction,
+    int DisplayOrder,
+    string InstallerUrl);
 
 public sealed record SerproPricingDto(
     string ServiceId,
@@ -34,7 +65,8 @@ public sealed record SerproOrganizationSettingsDto(
     decimal MonthlyCreditLimit,
     int DailyRequestLimit,
     string NotificationEmail,
-    string Notes);
+    string Notes,
+    string PlanCode = "cont_hub_full");
 
 public sealed record SerproCredentialStatusDto(
     string Owner,
@@ -45,7 +77,9 @@ public sealed record SerproCredentialStatusDto(
     string ConsumerSecretReference,
     bool CertificateConfigured,
     string LastTestStatus,
-    string LastTestMessage);
+    string LastTestMessage,
+    string ContractCnpj = "",
+    string ConsumerKeyMasked = "");
 
 public sealed record SerproWalletDto(
     string OrganizationId,
@@ -81,7 +115,28 @@ public sealed record SerproOrganizationSettingsInput(
     decimal MonthlyCreditLimit,
     int DailyRequestLimit,
     string NotificationEmail,
-    string Notes);
+    string Notes,
+    string? PlanCode = null);
+
+public sealed record SerproLocalAgentDto(
+    string OrganizationId,
+    string Status,
+    string PairingKeyPrefix,
+    string? PairingKeyCreatedAt,
+    string? PairingKeyExpiresAt,
+    string InstalledVersion,
+    string? LastSeenAt,
+    string? LastSyncAt,
+    string LastError);
+
+public sealed record SerproPairingKeyInput(string OrganizationId);
+
+public sealed record SerproPairingKeyResult(
+    bool Ok,
+    string PairingKey,
+    string PairingKeyPrefix,
+    string ExpiresAt,
+    string Message);
 
 public sealed record SerproDirectCredentialInput(
     string OrganizationId,

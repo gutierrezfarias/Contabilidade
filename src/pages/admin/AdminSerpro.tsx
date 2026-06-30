@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AdminLayout } from '../../components/layout/AdminLayout'
+import { AdminSerproPlansPanel } from '../../components/admin/AdminSerproPlansPanel'
 import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
 import {
   loadAdminSerproCatalog,
   loadAdminSerproContract,
   loadAdminSerproOrganizations,
+  loadAdminSerproPlans,
   loadAdminSerproPricing,
   saveAdminSerproContract,
+  saveAdminSerproPlan,
 } from '../../services/serproService'
-import type { SerproPricing, SerproService } from '../../types/serpro'
+import type { SerproContractPlan, SerproPricing, SerproService } from '../../types/serpro'
 
 type ContractState = {
   allowManagedMode: boolean
@@ -45,10 +48,12 @@ export function AdminSerpro() {
   const [services, setServices] = useState<SerproService[]>([])
   const [pricing, setPricing] = useState<SerproPricing[]>([])
   const [organizations, setOrganizations] = useState<Array<Record<string, unknown>>>([])
+  const [plans, setPlans] = useState<SerproContractPlan[]>([])
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [savingPlanCode, setSavingPlanCode] = useState('')
 
   const totals = useMemo(() => ({
     activeServices: services.filter((service) => service.status === 'active').length,
@@ -61,11 +66,12 @@ export function AdminSerpro() {
     setError('')
     setLoading(true)
     try {
-      const [contractResult, catalogResult, pricingResult, organizationResult] = await Promise.all([
+      const [contractResult, catalogResult, pricingResult, organizationResult, planResult] = await Promise.all([
         loadAdminSerproContract(),
         loadAdminSerproCatalog(),
         loadAdminSerproPricing(),
         loadAdminSerproOrganizations(),
+        loadAdminSerproPlans(),
       ])
 
       const contractRow = (contractResult as Record<string, unknown>).contract as Record<string, unknown> | undefined
@@ -82,10 +88,30 @@ export function AdminSerpro() {
       setServices(((catalogResult as Record<string, unknown>).services ?? []) as SerproService[])
       setPricing(((pricingResult as Record<string, unknown>).pricing ?? []) as SerproPricing[])
       setOrganizations(((organizationResult as Record<string, unknown>).organizations ?? []) as Array<Record<string, unknown>>)
+      setPlans(planResult.plans)
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Nao foi possivel carregar Serpro.')
     } finally {
       setLoading(false)
+    }
+  }
+
+  function updatePlan(nextPlan: SerproContractPlan) {
+    setPlans((current) => current.map((plan) => plan.code === nextPlan.code ? nextPlan : plan))
+  }
+
+  async function handleSavePlan(plan: SerproContractPlan) {
+    setMessage('')
+    setError('')
+    setSavingPlanCode(plan.code)
+    try {
+      const result = await saveAdminSerproPlan(plan)
+      updatePlan(result.plan)
+      setMessage(`Plano ${result.plan.commercialName} salvo.`)
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Nao foi possivel salvar o plano.')
+    } finally {
+      setSavingPlanCode('')
     }
   }
 
@@ -146,6 +172,8 @@ export function AdminSerpro() {
             <p className="mt-3 text-3xl font-bold text-slate-950">{totals.priceRows}</p>
           </div>
         </section>
+
+        <AdminSerproPlansPanel plans={plans} savingCode={savingPlanCode} services={services} onChange={updatePlan} onSave={handleSavePlan} />
 
         <section className="grid gap-6 xl:grid-cols-[1fr_0.9fr]">
           <div className="rounded-3xl bg-white p-6 shadow-sm ring-1 ring-slate-200">

@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using ContHub.NfeApi.Models;
@@ -106,7 +107,67 @@ public sealed class SupabaseSerproRepository(IHttpClientFactory httpClientFactor
             GetBool(row, "requires_authorization"),
             GetBool(row, "supports_managed_mode"),
             GetBool(row, "supports_direct_mode"),
-            Get(row, "status"))).ToList();
+            Get(row, "status"),
+            GetBool(row, "supports_local_agent"),
+            GetBool(row, "supports_manual_import", true),
+            GetBool(row, "consumes_credit", true))).ToList();
+    }
+
+    public async Task<List<SerproContractPlanDto>> ListContractPlansAsync(
+        bool includeInactive,
+        CancellationToken cancellationToken)
+    {
+        var activeFilter = includeInactive ? "" : "&active=eq.true";
+        var rows = await GetArrayAsync(
+            $"serpro_contract_plans?select=*{activeFilter}&order=display_order.asc,commercial_name.asc",
+            cancellationToken);
+
+        return rows.Select(MapContractPlan).ToList();
+    }
+
+    public async Task<SerproContractPlanDto> UpsertContractPlanAsync(
+        SerproContractPlanInput input,
+        string userId,
+        CancellationToken cancellationToken)
+    {
+        var code = NormalizePlanCode(input.Code);
+        var rows = await PostAsync(
+            "serpro_contract_plans?on_conflict=code",
+            new
+            {
+                active = input.Active,
+                allowed_service_ids = input.AllowedServiceIds
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Select(value => value.Trim())
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray(),
+                allows_fallback = input.AllowsFallback,
+                allows_homologation = input.AllowsHomologation,
+                allows_production = input.AllowsProduction,
+                code,
+                commercial_name = Require(input.CommercialName, "Informe o nome comercial do plano."),
+                default_daily_limit = Math.Max(0, input.DefaultDailyLimit),
+                description = input.Description ?? "",
+                display_order = input.DisplayOrder,
+                installer_url = input.InstallerUrl ?? "",
+                monthly_price = Math.Max(0, input.MonthlyPrice),
+                updated_by = EmptyToNull(userId)
+            },
+            cancellationToken,
+            prefer: "resolution=merge-duplicates,return=representation");
+
+        await AuditAsync(null, null, userId, "serpro.contract_plan.updated", "serpro_contract_plans", code, null, null, new
+        {
+            input.Active,
+            input.AllowsFallback,
+            input.AllowsHomologation,
+            input.AllowsProduction,
+            input.DefaultDailyLimit,
+            input.DisplayOrder,
+            input.MonthlyPrice
+        }, cancellationToken);
+
+        return MapContractPlan(rows[0]);
     }
 
     public async Task<List<SerproPricingDto>> ListPricingAsync(CancellationToken cancellationToken)
@@ -143,21 +204,42 @@ public sealed class SupabaseSerproRepository(IHttpClientFactory httpClientFactor
         string userId,
         CancellationToken cancellationToken)
     {
+        var planCode = NormalizePlanCode(input.PlanCode ?? PlanCodeFromAccessMode(input.AccessMode));
+        var plan = await GetRequiredContractPlanAsync(planCode, cancellationToken);
+        if (!plan.Active)
+        {
+            throw new InvalidOperationException("O plano selecionado esta inativo.");
+        }
+
+        var environment = NormalizeEnvironment(input.Environment);
+        if (environment == "producao" && !plan.AllowsProduction)
+        {
+            throw new InvalidOperationException("O plano selecionado nao permite ambiente de producao.");
+        }
+
+        if (environment == "homologacao" && !plan.AllowsHomologation)
+        {
+            throw new InvalidOperationException("O plano selecionado nao permite ambiente de homologacao.");
+        }
+
+        var accessMode = AccessModeFromPlanCode(planCode);
+        var billingMode = planCode == "serpro_direct" ? SerproDomainRules.DirectMode : SerproDomainRules.ManagedMode;
         var rows = await PostAsync(
             "serpro_organization_settings?on_conflict=organization_id",
             new
             {
-                allow_managed_fallback = input.AllowManagedFallback,
-                access_mode = NormalizeAccessMode(input.AccessMode),
-                billing_mode = NormalizeBillingMode(input.BillingMode),
-                daily_request_limit = Math.Max(0, input.DailyRequestLimit),
-                direct_mode_enabled = input.DirectModeEnabled,
-                environment = NormalizeEnvironment(input.Environment),
-                managed_mode_enabled = input.ManagedModeEnabled,
+                allow_managed_fallback = plan.AllowsFallback && input.AllowManagedFallback,
+                access_mode = accessMode,
+                billing_mode = billingMode,
+                daily_request_limit = input.DailyRequestLimit > 0 ? input.DailyRequestLimit : plan.DefaultDailyLimit,
+                direct_mode_enabled = planCode == "serpro_direct",
+                environment,
+                managed_mode_enabled = planCode == "cont_hub_full",
                 monthly_credit_limit = Math.Max(0, input.MonthlyCreditLimit),
                 notes = input.Notes ?? "",
                 notification_email = input.NotificationEmail ?? "",
                 organization_id = Require(input.OrganizationId, "Organizacao obrigatoria."),
+                plan_code = planCode,
                 status = NormalizeStatus(input.Status),
                 updated_by = EmptyToNull(userId)
             },
@@ -165,7 +247,7 @@ public sealed class SupabaseSerproRepository(IHttpClientFactory httpClientFactor
             prefer: "resolution=merge-duplicates,return=representation");
 
         await EnsureWalletAsync(input.OrganizationId, cancellationToken);
-        await AuditAsync(input.OrganizationId, null, userId, "serpro.organization_settings.updated", "serpro_organization_settings", input.OrganizationId, NormalizeBillingMode(input.BillingMode), null, new { input.Environment }, cancellationToken);
+        await AuditAsync(input.OrganizationId, null, userId, "serpro.organization_settings.updated", "serpro_organization_settings", input.OrganizationId, billingMode, null, new { environment, planCode }, cancellationToken);
         return MapSettings(rows[0]);
     }
 
@@ -253,6 +335,16 @@ public sealed class SupabaseSerproRepository(IHttpClientFactory httpClientFactor
         string userId,
         CancellationToken cancellationToken)
     {
+        var settings = await GetOrganizationSettingsAsync(input.OrganizationId, cancellationToken);
+        var plan = await GetRequiredContractPlanAsync(settings.PlanCode, cancellationToken);
+        var service = (await ListCatalogAsync(cancellationToken)).FirstOrDefault(item => item.Id == input.ServiceId)
+            ?? throw new InvalidOperationException("Servico Receita Federal nao encontrado.");
+
+        if (input.Enabled && !ServiceIsCompatible(service, plan, settings.AccessMode))
+        {
+            throw new InvalidOperationException("Este servico nao esta disponivel no plano atual.");
+        }
+
         var rows = await PostAsync(
             "serpro_organization_services?on_conflict=organization_id,service_id",
             new
@@ -271,6 +363,58 @@ public sealed class SupabaseSerproRepository(IHttpClientFactory httpClientFactor
 
         await AuditAsync(input.OrganizationId, null, userId, "serpro.organization_service.updated", "serpro_organization_services", input.ServiceId, input.BillingModeOverride, input.ServiceId, new { input.Enabled, input.Exempt }, cancellationToken);
         return rows[0];
+    }
+
+    public async Task<SerproLocalAgentDto> GetLocalAgentAsync(
+        string organizationId,
+        CancellationToken cancellationToken)
+    {
+        var row = await GetSingleAsync(
+            $"serpro_local_agents?select=*&organization_id=eq.{Escape(organizationId)}",
+            cancellationToken);
+
+        return row.ValueKind == JsonValueKind.Undefined
+            ? new SerproLocalAgentDto(organizationId, "disconnected", "", null, null, "", null, null, "")
+            : MapLocalAgent(row);
+    }
+
+    public async Task<SerproPairingKeyResult> RenewLocalAgentPairingKeyAsync(
+        string organizationId,
+        string userId,
+        CancellationToken cancellationToken)
+    {
+        var rawToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+        var pairingKey = $"cont-hub-agent-{rawToken}";
+        var prefix = pairingKey[..Math.Min(23, pairingKey.Length)];
+        var expiresAt = DateTimeOffset.UtcNow.AddHours(24);
+
+        await PostAsync(
+            "serpro_local_agents?on_conflict=organization_id",
+            new
+            {
+                organization_id = Require(organizationId, "Organizacao obrigatoria."),
+                pairing_key_created_at = DateTimeOffset.UtcNow,
+                pairing_key_expires_at = expiresAt,
+                pairing_key_hash = SerproSecretProtector.Fingerprint(pairingKey, _secretPepper),
+                pairing_key_prefix = prefix,
+                status = "pairing_pending",
+                updated_by = EmptyToNull(userId)
+            },
+            cancellationToken,
+            prefer: "resolution=merge-duplicates,return=minimal");
+
+        await AuditAsync(organizationId, null, userId, "serpro.local_agent.pairing_key_renewed", "serpro_local_agents", organizationId, null, null, new
+        {
+            expiresAt,
+            prefix
+        }, cancellationToken);
+
+        return new SerproPairingKeyResult(
+            true,
+            pairingKey,
+            prefix,
+            expiresAt.ToString("O"),
+            "Chave gerada. Ela sera exibida somente agora e expira em 24 horas.");
     }
 
     public async Task<List<JsonElement>> ListOrganizationServicesAsync(string organizationId, CancellationToken cancellationToken)
@@ -294,6 +438,27 @@ public sealed class SupabaseSerproRepository(IHttpClientFactory httpClientFactor
             cancellationToken);
     }
 
+    public async Task<List<JsonElement>> ListRequestsAsync(string organizationId, CancellationToken cancellationToken)
+    {
+        return await GetArrayAsync(
+            $"serpro_requests?select=id,organization_id,client_id,service_id,billing_mode,environment,status,cost_amount,sale_amount,cnpj,http_status,provider_status,provider_message,correlation_id,created_by,created_at,clients(company_name,cnpj)&organization_id=eq.{Escape(organizationId)}&order=created_at.desc&limit=100",
+            cancellationToken);
+    }
+
+    public async Task<List<JsonElement>> ListAuditLogsAsync(string organizationId, CancellationToken cancellationToken)
+    {
+        return await GetArrayAsync(
+            $"serpro_audit_logs?select=id,organization_id,client_id,actor_user_id,event_type,entity_type,entity_id,billing_mode,service_id,metadata,created_at&organization_id=eq.{Escape(organizationId)}&order=created_at.desc&limit=100",
+            cancellationToken);
+    }
+
+    public async Task<List<JsonElement>> ListManualImportBatchesAsync(string organizationId, CancellationToken cancellationToken)
+    {
+        return await GetArrayAsync(
+            $"manual_revenue_import_batches?select=id,status,provider,source,original_file_count,extracted_file_count,duplicate_count,error_count,imported_count,ignored_count,created_by,confirmed_by,confirmed_at,created_at&organization_id=eq.{Escape(organizationId)}&order=created_at.desc&limit=50",
+            cancellationToken);
+    }
+
     public async Task<SerproRevenueRequestResult> CreateRevenueRequestAsync(
         SerproRevenueRequestInput input,
         string userId,
@@ -302,7 +467,8 @@ public sealed class SupabaseSerproRepository(IHttpClientFactory httpClientFactor
         var settings = await GetOrganizationSettingsAsync(input.OrganizationId, cancellationToken);
         var managed = await GetManagedCredentialStatusAsync(cancellationToken);
         var direct = await GetDirectCredentialStatusAsync(input.OrganizationId, settings.Environment, cancellationToken);
-        var resolved = SerproDomainRules.ResolveMode(settings, managed, direct);
+        var localAgent = await GetLocalAgentAsync(input.OrganizationId, cancellationToken);
+        var resolved = SerproDomainRules.ResolveMode(settings, managed, direct, localAgent);
         var price = await GetPricingAsync(input.ServiceId, settings.Environment, cancellationToken);
         var wallet = await GetWalletAsync(input.OrganizationId, cancellationToken);
         var payloadHash = SerproDomainRules.HashText(input.Payload.GetRawText());
@@ -374,7 +540,8 @@ public sealed class SupabaseSerproRepository(IHttpClientFactory httpClientFactor
         var settings = await GetOrganizationSettingsAsync(organizationId, cancellationToken);
         var managed = await GetManagedCredentialStatusAsync(cancellationToken);
         var direct = await GetDirectCredentialStatusAsync(organizationId, settings.Environment, cancellationToken);
-        var resolved = SerproDomainRules.ResolveMode(settings, managed, direct);
+        var localAgent = await GetLocalAgentAsync(organizationId, cancellationToken);
+        var resolved = SerproDomainRules.ResolveMode(settings, managed, direct, localAgent);
         var message = resolved.CredentialsReady
             ? "Configuracao local pronta. A autenticacao real depende do provider oficial Serpro habilitado no backend."
             : resolved.BlockReason;
@@ -695,6 +862,35 @@ public sealed class SupabaseSerproRepository(IHttpClientFactory httpClientFactor
             prefer: "resolution=merge-duplicates,return=minimal");
     }
 
+    private async Task<SerproContractPlanDto> GetRequiredContractPlanAsync(
+        string planCode,
+        CancellationToken cancellationToken)
+    {
+        var row = await GetRequiredSingleAsync(
+            $"serpro_contract_plans?select=*&code=eq.{Escape(NormalizePlanCode(planCode))}",
+            "Plano Receita Federal nao encontrado. Rode a migration 20260629_revenue_federal_plan_experience.sql.",
+            cancellationToken);
+        return MapContractPlan(row);
+    }
+
+    private static bool ServiceIsCompatible(
+        SerproServiceDto service,
+        SerproContractPlanDto plan,
+        string accessMode)
+    {
+        if (!plan.AllowedServiceIds.Contains(service.Id, StringComparer.Ordinal) || service.Status != "active")
+        {
+            return false;
+        }
+
+        return accessMode switch
+        {
+            SerproDomainRules.DirectMode => service.SupportsDirectMode,
+            SerproDomainRules.LocalAgentMode => service.SupportsLocalAgent,
+            _ => service.SupportsManagedMode
+        };
+    }
+
     private async Task AuditAsync(
         string? organizationId,
         string? clientId,
@@ -839,7 +1035,39 @@ public sealed class SupabaseSerproRepository(IHttpClientFactory httpClientFactor
             GetDecimal(row, "monthly_credit_limit"),
             GetInt(row, "daily_request_limit"),
             Get(row, "notification_email"),
-            Get(row, "notes"));
+            Get(row, "notes"),
+            Get(row, "plan_code", PlanCodeFromAccessMode(Get(row, "access_mode", "cont_hub_managed"))));
+    }
+
+    private static SerproContractPlanDto MapContractPlan(JsonElement row)
+    {
+        return new SerproContractPlanDto(
+            Get(row, "code"),
+            Get(row, "commercial_name"),
+            GetDecimal(row, "monthly_price"),
+            Get(row, "description"),
+            GetBool(row, "active", true),
+            GetStringList(row, "allowed_service_ids"),
+            GetInt(row, "default_daily_limit"),
+            GetBool(row, "allows_fallback"),
+            GetBool(row, "allows_homologation", true),
+            GetBool(row, "allows_production"),
+            GetInt(row, "display_order"),
+            Get(row, "installer_url"));
+    }
+
+    private static SerproLocalAgentDto MapLocalAgent(JsonElement row)
+    {
+        return new SerproLocalAgentDto(
+            Get(row, "organization_id"),
+            Get(row, "status", "disconnected"),
+            Get(row, "pairing_key_prefix"),
+            EmptyToNull(Get(row, "pairing_key_created_at")),
+            EmptyToNull(Get(row, "pairing_key_expires_at")),
+            Get(row, "installed_version"),
+            EmptyToNull(Get(row, "last_seen_at")),
+            EmptyToNull(Get(row, "last_sync_at")),
+            Get(row, "last_error"));
     }
 
     private static SerproCredentialStatusDto MapCredential(string owner, JsonElement row)
@@ -853,7 +1081,9 @@ public sealed class SupabaseSerproRepository(IHttpClientFactory httpClientFactor
             Get(row, "consumer_secret_reference"),
             !string.IsNullOrWhiteSpace(Get(row, "certificate_id")),
             Get(row, "last_test_status"),
-            Get(row, "last_test_message"));
+            Get(row, "last_test_message"),
+            Get(row, "contract_cnpj"),
+            MaskKey(Get(row, "consumer_key")));
     }
 
     private static SerproPricingDto MapPricing(JsonElement row)
@@ -874,7 +1104,34 @@ public sealed class SupabaseSerproRepository(IHttpClientFactory httpClientFactor
 
     private static string NormalizeAccessMode(string value)
     {
-        return value is "manual_free" or SerproDomainRules.DirectMode ? value : SerproDomainRules.ManagedMode;
+        return value is "manual_free" or SerproDomainRules.DirectMode or SerproDomainRules.LocalAgentMode
+            ? value
+            : SerproDomainRules.ManagedMode;
+    }
+
+    private static string NormalizePlanCode(string value)
+    {
+        return value is "cont_hub_local_agent" or "serpro_direct" ? value : "cont_hub_full";
+    }
+
+    private static string PlanCodeFromAccessMode(string accessMode)
+    {
+        return NormalizeAccessMode(accessMode) switch
+        {
+            SerproDomainRules.DirectMode => "serpro_direct",
+            SerproDomainRules.LocalAgentMode => "cont_hub_local_agent",
+            _ => "cont_hub_full"
+        };
+    }
+
+    private static string AccessModeFromPlanCode(string planCode)
+    {
+        return NormalizePlanCode(planCode) switch
+        {
+            "serpro_direct" => SerproDomainRules.DirectMode,
+            "cont_hub_local_agent" => SerproDomainRules.LocalAgentMode,
+            _ => SerproDomainRules.ManagedMode
+        };
     }
 
     private static string NormalizeEnvironment(string value)
@@ -890,6 +1147,13 @@ public sealed class SupabaseSerproRepository(IHttpClientFactory httpClientFactor
     private static string NormalizeDigits(string value)
     {
         return new string((value ?? "").Where(char.IsDigit).ToArray());
+    }
+
+    private static string MaskKey(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "";
+        var trimmed = value.Trim();
+        return trimmed.Length <= 6 ? "******" : $"{trimmed[..3]}...{trimmed[^3..]}";
     }
 
     private static string NormalizeDocumentType(string value)
@@ -942,6 +1206,20 @@ public sealed class SupabaseSerproRepository(IHttpClientFactory httpClientFactor
             JsonValueKind.String => bool.TryParse(value.GetString(), out var parsed) ? parsed : fallback,
             _ => fallback
         };
+    }
+
+    private static List<string> GetStringList(JsonElement row, string name)
+    {
+        if (!row.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        return value.EnumerateArray()
+            .Where(item => item.ValueKind == JsonValueKind.String)
+            .Select(item => item.GetString() ?? "")
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .ToList();
     }
 
     private static decimal GetDecimal(JsonElement row, string name)

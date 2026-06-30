@@ -1,5 +1,10 @@
 import { supabase } from './supabase'
-import type { SerproSettings, SerproSettingsResponse } from '../types/serpro'
+import type {
+  SerproContractPlan,
+  SerproPairingKeyResult,
+  SerproSettings,
+  SerproSettingsResponse,
+} from '../types/serpro'
 
 type ApiResult = {
   error?: string
@@ -31,7 +36,7 @@ async function requestSerpro<T>(path: string, options: RequestInit = {}) {
     const message = result.error ?? 'Nao foi possivel executar a operacao Serpro.'
     throw new Error(
       message.includes('schema cache') || message.includes('does not exist') || message.includes('relation')
-        ? 'Execute a migration Serpro no Supabase: 20260616_serpro_dual_contract_mode.sql.'
+        ? 'Execute as migrations Serpro no Supabase, incluindo 20260629_revenue_federal_plan_experience.sql.'
         : message,
     )
   }
@@ -181,6 +186,27 @@ export function loadAdminSerproPricing() {
 
 export function loadAdminSerproOrganizations() {
   return requestSerpro('admin/serpro/organizations')
+}
+
+export function loadAdminSerproPlans() {
+  return requestSerpro<{ ok: boolean; plans: SerproContractPlan[] }>('admin/serpro/plans')
+}
+
+export function saveAdminSerproPlan(plan: SerproContractPlan) {
+  return requestSerpro<{ ok: boolean; plan: SerproContractPlan }>(
+    `admin/serpro/plans/${encodeURIComponent(plan.code)}`,
+    {
+      body: JSON.stringify(plan),
+      method: 'PUT',
+    },
+  )
+}
+
+export function renewSerproLocalAgentPairingKey(organizationId: string) {
+  return requestSerpro<SerproPairingKeyResult>('serpro/local-agent/pairing-key', {
+    body: JSON.stringify({ organizationId }),
+    method: 'POST',
+  })
 }
 
 export function createRevenueRequest(input: {
